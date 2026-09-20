@@ -386,7 +386,7 @@ func runSchedule() {
 			urls = append(urls, c.BaseURL)
 		}
 	}
-	if err := spark.WaitForWorkers(urls, 2*time.Minute); err != nil {
+	if err := spark.WaitForWorkers(urls, waitWorkersTimeout()); err != nil {
 		fmt.Fprintf(os.Stderr, "wait workers: %v\n", err)
 		os.Exit(1)
 	}
@@ -406,6 +406,15 @@ func runSchedule() {
 	fmt.Println("Schedule PASSED!")
 }
 
+func waitWorkersTimeout() time.Duration {
+	if v := os.Getenv("GOSPARK_WAIT_WORKERS"); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return 2 * time.Minute
+}
+
 func runPrintK8s() {
 	ns := os.Getenv("GOSPARK_NAMESPACE")
 	if ns == "" {
@@ -419,14 +428,18 @@ func runPrintK8s() {
 	if len(os.Args) > 2 {
 		part = os.Args[2]
 	}
+	task := os.Getenv("GOSPARK_TASK")
+	if task == "" {
+		task = "k8s-wc"
+	}
 	switch part {
 	case "exec":
 		fmt.Print(spark.K8sExecutorManifest(ns, image, 2))
 	case "driver":
-		fmt.Print(spark.K8sDriverManifest(ns, image, "k8s-wc", 2, 2))
+		fmt.Print(spark.K8sDriverManifest(ns, image, task, 2, 2))
 	default:
 		fmt.Print(spark.K8sExecutorManifest(ns, image, 2))
 		fmt.Println("---")
-		fmt.Print(spark.K8sDriverManifest(ns, image, "k8s-wc", 2, 2))
+		fmt.Print(spark.K8sDriverManifest(ns, image, task, 2, 2))
 	}
 }

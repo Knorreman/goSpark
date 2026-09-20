@@ -94,7 +94,7 @@ metadata:
   name: gospark-driver
   namespace: %s
 spec:
-  backoffLimit: 1
+  backoffLimit: 3
   template:
     spec:
       restartPolicy: Never

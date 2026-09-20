@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build and Test (Go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.24", "1.25"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+
+      - name: Check formatting
+        run: |
+          UNFMT=$(gofmt -l .)
+          if [ -n "$UNFMT" ]; then
+            echo "Files not gofmt-formatted:"
+            echo "$UNFMT"
+            exit 1
+          fi
+
+      - name: Go module check
+        run: go mod verify
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -count=1 -timeout 300s ./...
+
+      - name: Race test
+        run: go test -race -count=1 -timeout 600s ./...
+
+      - name: Coverage
+        run: go test -count=1 -timeout 300s -coverprofile=coverage.out -covermode=atomic .
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-go${{ matrix.go }}
+          path: coverage.out
+          if-no-files-found: error
+
+  examples:
+    name: Build examples and worker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+
+      - name: Build examples
+        run: |
+          go build ./examples/...
+          go build -o bin/gospark-worker ./cmd/gospark-worker/
+
+      - name: Run smoke test binary
+        run: ./bin/gospark-worker smoke
+
+      - name: Build container image
+        run: docker build -t gospark/worker:ci .
+
+      - name: Run wordcount in container
+        run: docker run --rm gospark/worker:ci wordcount

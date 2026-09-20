@@ -1,0 +1,13 @@
+# build artifacts
+bin/
+*.test
+coverage.out
+
+# editor / tooling state
+.metals/
+.opencode/
+.idea/
+.vscode/
+
+# OS
+.DS_Store

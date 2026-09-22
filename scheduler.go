@@ -75,6 +75,7 @@ func ScheduleWith(spec JobSpec, runners []TaskRunner, opts ScheduleOpts) ([]any,
 			var maps []MapOutputManifest
 			for p := 0; p < st.NumPartitions; p++ {
 				res, err := execWithRetry(runners, &wi, opts.MaxAttempts, Task{
+					Fingerprint: plan.Fingerprint,
 					JobID:       jobID,
 					Job:         spec,
 					StageID:     st.ID,
@@ -110,6 +111,7 @@ func ScheduleWith(spec JobSpec, runners []TaskRunner, opts ScheduleOpts) ([]any,
 		}
 		for p := 0; p < st.NumPartitions; p++ {
 			res, err := execWithRetry(runners, &wi, opts.MaxAttempts, Task{
+				Fingerprint: plan.Fingerprint,
 				JobID:       jobID,
 				Job:         spec,
 				StageID:     st.ID,

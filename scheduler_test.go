@@ -126,6 +126,11 @@ func TestScheduleTwoProcessesHTTPShuffle(t *testing.T) {
 }
 
 func startTestWorker(t *testing.T) *WorkerClient {
+	c, _ := startKillableWorker(t)
+	return c
+}
+
+func startKillableWorker(t *testing.T) (*WorkerClient, func()) {
 	t.Helper()
 	store := t.TempDir()
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
@@ -161,7 +166,7 @@ func startTestWorker(t *testing.T) *WorkerClient {
 		t.Fatalf("expected LISTEN= got %q", line)
 	}
 	addr := strings.TrimPrefix(line, "LISTEN=")
-	return &WorkerClient{BaseURL: "http://" + addr}
+	return &WorkerClient{BaseURL: "http://" + addr}, func() { _ = cmd.Process.Kill() }
 }
 
 type failOnceRunner struct {

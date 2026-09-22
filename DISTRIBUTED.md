@@ -25,3 +25,20 @@ Upstream installation currently loads all buckets to support narrow dependencies
 whose partition mapping differs from the task index (e.g. coalescing). Optimized
 dependency-aware fetching remains open. Executor-loss recovery for arbitrary
 multi-stage DAGs and distributed cache reuse also remain separate work.
+
+## Recovery baseline
+
+Schedule now replays the full DAG after exhausted task retries, up to two
+recoveries by default (`ScheduleOpts.MaxRecoveries`). Every execution gets a
+random job ID, isolating shuffle paths and late writes from earlier executions.
+Partial collected results are discarded on replay. This supports deterministic,
+replayable collect workloads; it does not provide exactly-once external effects.
+Worker RPCs have a two-minute default deadline, configurable on WorkerClient.
+An RPC timeout does not yet cancel computation inside the worker.
+
+Regression tests delete published outputs during a multi-stage pipeline and kill
+an actual worker process after map publication, then assert exact final results.
+Fine-grained stage invalidation, periodic in-flight heartbeats, cancellation,
+cache-location tracking, and Kubernetes pod-kill qualification remain open.
+The Kubernetes script now fails on missing prerequisites, creates kind before
+checking connectivity, and selects the successful driver pod's logs after retries.

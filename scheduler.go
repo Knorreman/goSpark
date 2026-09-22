@@ -1,6 +1,7 @@
 package spark
 
 import (
+	"crypto/rand"
 	"fmt"
 	"net/http"
 	"strings"
@@ -43,7 +44,8 @@ func WaitForWorkers(urls []string, timeout time.Duration) error {
 }
 
 type ScheduleOpts struct {
-	MaxAttempts int
+	MaxAttempts   int
+	MaxRecoveries int
 }
 
 func Schedule(spec JobSpec, runners []TaskRunner) ([]any, error) {
@@ -51,6 +53,28 @@ func Schedule(spec JobSpec, runners []TaskRunner) ([]any, error) {
 }
 
 func ScheduleWith(spec JobSpec, runners []TaskRunner, opts ScheduleOpts) ([]any, error) {
+	if opts.MaxRecoveries < 0 {
+		return nil, fmt.Errorf("negative recovery limit")
+	}
+	if opts.MaxRecoveries == 0 {
+		opts.MaxRecoveries = 2
+	}
+	var last error
+	for generation := 0; generation <= opts.MaxRecoveries; generation++ {
+		var id [16]byte
+		if _, err := rand.Read(id[:]); err != nil {
+			return nil, err
+		}
+		result, err := scheduleGeneration(spec, runners, opts, fmt.Sprintf("job-%x", id))
+		if err == nil {
+			return result, nil
+		}
+		last = err
+	}
+	return nil, fmt.Errorf("recovery limit exhausted: %w", last)
+}
+
+func scheduleGeneration(spec JobSpec, runners []TaskRunner, opts ScheduleOpts, jobID string) ([]any, error) {
 	if len(runners) == 0 {
 		return nil, fmt.Errorf("no workers")
 	}
@@ -64,7 +88,6 @@ func ScheduleWith(spec JobSpec, runners []TaskRunner, opts ScheduleOpts) ([]any,
 	ordered := orderedStages(plan)
 	stageOut := make(map[int][]MapOutputManifest)
 	var result []any
-	jobID := spec.TaskName
 	wi := 0
 	for _, st := range ordered {
 		var upstream []MapOutputManifest
@@ -92,22 +115,6 @@ func ScheduleWith(spec JobSpec, runners []TaskRunner, opts ScheduleOpts) ([]any,
 			}
 			stageOut[st.ID] = latestManifests(maps)
 			continue
-		}
-		var repaired []MapOutputManifest
-		for _, pid := range st.Parents {
-			ps, ok := stageByID(plan, pid)
-			if !ok {
-				continue
-			}
-			maps, err := refreshDeadMapOutputs(runners, &wi, opts.MaxAttempts, spec, jobID, ps, stageOut[pid], nil)
-			if err != nil {
-				return nil, err
-			}
-			stageOut[pid] = maps
-			repaired = append(repaired, maps...)
-		}
-		if len(repaired) > 0 {
-			upstream = latestManifests(repaired)
 		}
 		for p := 0; p < st.NumPartitions; p++ {
 			res, err := execWithRetry(runners, &wi, opts.MaxAttempts, Task{

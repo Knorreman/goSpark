@@ -116,6 +116,8 @@ func decodeRecordSlice(blob []byte) ([]any, error) {
 
 type WorkerClient struct {
 	BaseURL string
+	// Timeout bounds each RPC, including shuffle fetch and computation on the worker.
+	Timeout time.Duration
 }
 
 func (c *WorkerClient) Alive() bool {
@@ -138,11 +140,19 @@ func (c *WorkerClient) Exec(task Task) (ExecResult, error) {
 	if err != nil {
 		return ExecResult{}, err
 	}
-	resp, err := http.Post(strings.TrimRight(c.BaseURL, "/")+"/task", "application/json", bytes.NewReader(body))
+	timeout := c.Timeout
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Post(strings.TrimRight(c.BaseURL, "/")+"/task", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return ExecResult{}, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ExecResult{}, fmt.Errorf("worker returned HTTP %d", resp.StatusCode)
+	}
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return ExecResult{}, err

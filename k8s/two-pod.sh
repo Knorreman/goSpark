@@ -19,10 +19,8 @@ echo "namespace=$NAMESPACE image=$IMAGE engine=$ENGINE"
 # Offline gate: two OS processes + manifest generation must pass first.
 go test -count=1 -run 'TestScheduleTwoProcessesHTTPShuffle|TestK8sExecutorManifest|TestK8sDriverManifest' .
 
-if ! command -v kubectl >/dev/null 2>&1 || ! kubectl cluster-info >/dev/null 2>&1; then
-  echo "No kubectl cluster. Offline tests passed; cluster run skipped."
-  exit 0
-fi
+command -v kubectl >/dev/null
+command -v kind >/dev/null
 
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ./bin/gospark-worker ./cmd/gospark-worker/
 
@@ -31,6 +29,10 @@ if ! KIND_EXPERIMENTAL_PROVIDER="$ENGINE" kind get clusters 2>/dev/null | grep -
   echo "Creating kind cluster..."
   KIND_EXPERIMENTAL_PROVIDER="$ENGINE" kind create cluster --name kind-cluster --image kindest/node:v1.31.0
 fi
+
+KIND_EXPERIMENTAL_PROVIDER="$ENGINE" kind export kubeconfig --name kind-cluster
+kubectl cluster-info
+kubectl wait --for=condition=Ready nodes --all --timeout=180s
 
 kubectl delete namespace "$NAMESPACE" --ignore-not-found --wait=true --timeout=120s || true
 kubectl create namespace "$NAMESPACE"
@@ -71,7 +73,9 @@ run_task() {
     return
   fi
   local out
-  out=$(kubectl logs -n "$NAMESPACE" job/gospark-driver)
+  local successful_pod
+  successful_pod=$(kubectl get pods -n "$NAMESPACE" -l job-name=gospark-driver --field-selector=status.phase=Succeeded -o jsonpath='{.items[0].metadata.name}')
+  out=$(kubectl logs -n "$NAMESPACE" "$successful_pod")
   echo "$out"
   if ! grep -q "Schedule PASSED!" <<<"$out"; then
     echo "driver for $task: missing 'Schedule PASSED!' marker"

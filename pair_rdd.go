@@ -1,5 +1,7 @@
 package spark
 
+import "sort"
+
 func ReduceByKey[K comparable, V any](rdd *RDD[Pair[K, V]], partitioner Partitioner, fn func(V, V) V) *RDD[Pair[K, V]] {
 	return NewReduceByKeyRDD(rdd, partitioner, fn)
 }
@@ -257,18 +259,29 @@ func newCogroupRDD[K comparable, V any, W any](rdd1 *RDD[Pair[K, V]], rdd2 *RDD[
 }
 
 func SortByKey[K comparable, V any](rdd *RDD[Pair[K, V]], less func(K, K) bool, ascending bool, numPartitions ...int) *RDD[Pair[K, V]] {
-	data := Collect(rdd)
-	sortSlice(data, func(i, j int) bool {
-		if ascending {
-			return less(data[i].Key, data[j].Key)
-		}
-		return less(data[j].Key, data[i].Key)
-	})
 	np := rdd.GetNumPartitions()
 	if len(numPartitions) > 0 && numPartitions[0] > 0 {
 		np = numPartitions[0]
 	}
-	return newParallelCollectionRDD(rdd.ctx, data, np)
+	if np == 0 {
+		np = 1
+	}
+	// Correctness-first global sort: all map outputs are available to each
+	// result task. Range sampling and external merge sorting are future work.
+	sid := rdd.ctx.nextShuffleID()
+	return NewRDD[Pair[K, V]](rdd.ctx,
+		func() []Partition { return NewPartitions(np) },
+		func() []Dependency { return []Dependency{NewShuffleDep(rdd, NewHashPartitioner(1), sid, false, nil)} },
+		func(p Partition) Iterator[Pair[K, V]] {
+			data := CollectIterator(readShuffleReduceOutput[K, V](rdd.ctx, sid, 0, len(rdd.Partitions())))
+			sort.SliceStable(data, func(i, j int) bool {
+				if ascending {
+					return less(data[i].Key, data[j].Key)
+				}
+				return less(data[j].Key, data[i].Key)
+			})
+			return SliceIterator(data[p.Index()*len(data)/np : (p.Index()+1)*len(data)/np])
+		})
 }
 
 func sortSlice[K comparable, V any](data []Pair[K, V], less func(i, j int) bool) {

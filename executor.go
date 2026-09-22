@@ -14,6 +14,7 @@ type Task struct {
 	Attempt     int
 	StoreDir    string
 	Upstream    []MapOutputManifest
+	Fingerprint string
 }
 
 type ExecResult struct {
@@ -46,6 +47,12 @@ func ExecuteTask(task Task) (ExecResult, error) {
 	if stage == nil {
 		return ExecResult{}, fmt.Errorf("stage %d not in plan", task.StageID)
 	}
+	if task.PartitionID < 0 || task.PartitionID >= stage.NumPartitions {
+		return ExecResult{}, fmt.Errorf("invalid partition %d for stage %d", task.PartitionID, stage.ID)
+	}
+	if task.Fingerprint != "" && task.Fingerprint != plan.Fingerprint {
+		return ExecResult{}, fmt.Errorf("driver/worker graph fingerprint mismatch")
+	}
 	factory, ok := GetJob(task.Job.TaskName)
 	if !ok {
 		return ExecResult{}, fmt.Errorf("job %q not registered", task.Job.TaskName)
@@ -65,6 +72,39 @@ func ExecuteTask(task Task) (ExecResult, error) {
 		jobID = task.Job.TaskName
 	}
 	store := NewDiskShuffleStore(task.StoreDir)
+	actual, err := PlanRDD(rdd, task.Job)
+	if err != nil || actual.Fingerprint != plan.Fingerprint {
+		return ExecResult{}, fmt.Errorf("job factory changed graph during reconstruction")
+	}
+	for _, parentID := range stage.Parents {
+		parent, _ := stageByID(plan, parentID)
+		seen := make(map[int]bool)
+		for _, m := range task.Upstream {
+			if m.ShuffleID != parent.ShuffleID {
+				continue
+			}
+			if m.JobID != jobID || m.MapID < 0 || m.MapID >= parent.NumPartitions || seen[m.MapID] {
+				return ExecResult{}, fmt.Errorf("invalid or duplicate manifest for shuffle %d map %d", m.ShuffleID, m.MapID)
+			}
+			seen[m.MapID] = true
+			buckets := make(map[int]bool)
+			for _, b := range m.Buckets {
+				if b.ReduceID < 0 || b.ReduceID >= parent.NumReducers || buckets[b.ReduceID] {
+					return ExecResult{}, fmt.Errorf("invalid bucket manifest")
+				}
+				buckets[b.ReduceID] = true
+			}
+			if len(buckets) != parent.NumReducers {
+				return ExecResult{}, fmt.Errorf("missing bucket manifest")
+			}
+		}
+		if len(seen) != parent.NumPartitions {
+			return ExecResult{}, fmt.Errorf("missing outputs for shuffle %d: got %d want %d", parent.ShuffleID, len(seen), parent.NumPartitions)
+		}
+	}
+	if err := installUpstream(ctx, *stage, task, store); err != nil {
+		return ExecResult{}, err
+	}
 	switch stage.Kind {
 	case StageShuffleMap:
 		man, err := executeShuffleMap(ctx, rdd, *stage, task, jobID, store)
@@ -130,9 +170,6 @@ func executeResult(ctx *Context, root RDDAny, stage Stage, task Task, store *Dis
 		return nil, fmt.Errorf("result stage requires upstream map outputs")
 	}
 	task.Upstream = latestManifests(task.Upstream)
-	if err := installUpstream(ctx, stage, task, store); err != nil {
-		return nil, err
-	}
 	part, ok := partitionByIndex(root, task.PartitionID)
 	if !ok {
 		return nil, nil
@@ -163,17 +200,24 @@ func installUpstream(ctx *Context, stage Stage, task Task, store *DiskShuffleSto
 		}
 		ctx.ShuffleManager().RegisterShuffle(shuffleID)
 		for _, m := range maps {
-			recs, err := readUpstreamBucket(store, m, task.PartitionID)
-			if err != nil {
-				return err
+			buckets := make(map[int][]any)
+			for _, bucket := range m.Buckets {
+				recs, err := readUpstreamBucket(store, m, bucket.ReduceID)
+				if err != nil {
+					return err
+				}
+				buckets[bucket.ReduceID] = recs
 			}
-			ctx.ShuffleManager().WriteMapOutput(shuffleID, m.MapID, map[int][]any{task.PartitionID: recs})
+			ctx.ShuffleManager().WriteMapOutput(shuffleID, m.MapID, buckets)
 		}
 	}
 	return nil
 }
 
 func readUpstreamBucket(store *DiskShuffleStore, m MapOutputManifest, reduceID int) ([]any, error) {
+	if m.BaseURL != "" {
+		return FetchShuffleBucket(m.BaseURL, m, reduceID, DefaultCodec())
+	}
 	if m.Location != "" {
 		path := filepath.Join(m.Location, bucketName(reduceID))
 		if _, err := os.Stat(path); err == nil {

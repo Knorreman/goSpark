@@ -17,6 +17,7 @@ type FSFileInfo struct {
 
 type ObjectStore interface {
 	Put(key string, data []byte) error
+	PutIfAbsent(key string, data []byte) error
 	Get(key string) ([]byte, error)
 	GetRange(key string, offset int64) (io.ReadCloser, error)
 	Head(key string) (int64, error)
@@ -40,6 +41,16 @@ func (m *MemStore) Put(key string, data []byte) error {
 	cp := make([]byte, len(data))
 	copy(cp, data)
 	m.files[key] = cp
+	return nil
+}
+
+func (m *MemStore) PutIfAbsent(key string, data []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.files[key]; ok {
+		return fmt.Errorf("object %q already exists: %w", key, os.ErrExist)
+	}
+	m.files[key] = bytes.Clone(data)
 	return nil
 }
 
@@ -142,15 +153,35 @@ func storeGetRange(st ObjectStore, key string, offset int64) (io.ReadCloser, err
 }
 
 type bufPutCloser struct {
-	store ObjectStore
-	key   string
-	buf   bytes.Buffer
+	store     ObjectStore
+	key       string
+	buf       bytes.Buffer
+	exclusive bool
+	closed    bool
 }
 
-func (w *bufPutCloser) Write(p []byte) (int, error) { return w.buf.Write(p) }
+func (w *bufPutCloser) Write(p []byte) (int, error) {
+	if w.closed {
+		return 0, os.ErrClosed
+	}
+	return w.buf.Write(p)
+}
 
 func (w *bufPutCloser) Close() error {
+	if w.closed {
+		return os.ErrClosed
+	}
+	w.closed = true
+	if w.exclusive {
+		return w.store.PutIfAbsent(w.key, w.buf.Bytes())
+	}
 	return w.store.Put(w.key, w.buf.Bytes())
+}
+
+func (w *bufPutCloser) Abort() error {
+	w.closed = true
+	w.buf.Reset()
+	return nil
 }
 
 func objectStoreCreate(st ObjectStore, key string) (io.WriteCloser, error) {

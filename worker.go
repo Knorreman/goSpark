@@ -23,6 +23,7 @@ type execTaskResponse struct {
 	PartitionID int                `json:"partition_id"`
 	Kind        StageKind          `json:"kind"`
 	Manifest    *MapOutputManifest `json:"manifest,omitempty"`
+	Output      *PartitionOutput   `json:"output,omitempty"`
 	RecordBlob  []byte             `json:"record_blob,omitempty"`
 	Error       string             `json:"error,omitempty"`
 	FetchError  *FetchError        `json:"fetch_error,omitempty"`
@@ -64,6 +65,13 @@ func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
 			return
 		}
 		out := execTaskResponse{JobID: task.JobID, StageID: task.StageID, Attempt: task.Attempt, PartitionID: task.PartitionID}
+		if err == nil && res.Output != nil && task.PartitionID == 0 && task.Attempt == 0 && os.Getenv("GOSPARK_TEST_FAIL_SAVE_ONCE") == "true" {
+			out.Error = "injected lost save response after attempt upload"
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(out)
+			return
+		}
 		if err != nil {
 			out.Error = err.Error()
 			errors.As(err, &out.FetchError)
@@ -73,6 +81,7 @@ func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
 			return
 		}
 		out.Kind = res.Kind
+		out.Output = res.Output
 		if res.Manifest != nil {
 			man := *res.Manifest
 			man.BaseURL = baseURL
@@ -233,7 +242,7 @@ func (c *WorkerClient) ExecContext(parent context.Context, task Task) (ExecResul
 	if resp.StatusCode != http.StatusOK {
 		return ExecResult{}, fmt.Errorf("worker returned HTTP %d", resp.StatusCode)
 	}
-	res := ExecResult{PartitionID: out.PartitionID, Kind: out.Kind, Manifest: out.Manifest}
+	res := ExecResult{PartitionID: out.PartitionID, Kind: out.Kind, Manifest: out.Manifest, Output: out.Output}
 	if len(out.RecordBlob) > 0 {
 		recs, err := decodeRecordSlice(out.RecordBlob)
 		if err != nil {

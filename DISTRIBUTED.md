@@ -59,3 +59,36 @@ Persisted cache locations are not tracked across workers; lost cache partitions
 are recomputed from lineage on future tasks. Execution remains sequential;
 fine-grained narrow-partition invalidation and scheduling many tasks in parallel
 remain future work.
+
+## Distributed output commits
+
+Use `ScheduleSave(JobSpec{TaskName: "...", Action: ActionSave,
+Params: map[string]string{"path": "s3://bucket/output"}}, workers)` to run a
+registered compiled job. Each worker writes its result partition to a unique
+`_temporary/<job-id>/stage-<id>/part-<index>-attempt-<number>` path and closes
+the writer before reporting a digest and byte count. The driver checks every
+selected attempt, then conditionally creates `_SUCCESS` as a JSON manifest.
+Local filesystems publish it via a same-directory hard link; S3 uses
+`PutObject` with `If-None-Match: *`. An identical commit is idempotent; a
+different job must use a new output path. Failed runs cannot publish a
+partially successful manifest.
+
+`ReadCommittedOutput(path)` lists the accepted partition keys in index order.
+Readers must follow that manifest; listing `_temporary` includes abandoned
+and superseded attempts. `SaveAsTextFile` is an older local API with different
+publication behavior. Object-store credentials/endpoint come from `AWS_*`
+environment variables on **both** workers and driver (typically Kubernetes
+Secrets); do not embed credentials in `JobSpec`.
+
+`TestMinIODistributedSave` runs against a real MinIO endpoint when
+`GOSPARK_TEST_S3_ENDPOINT` is set; it tests cross-process writes, a lost
+worker response, competing conditional commits, corruption, and reruns.
+The K8s workflow provisions MinIO and runs `k8s/minio-output.sh` after the
+executor-recovery test. Local kind/podman validation confirmed pod-to-pod
+shuffle, injected save retry, and exact MinIO results with the scheduler on
+executor 0. The separate driver Job path requires Docker-based CI because
+newly created Job pods cannot reliably reach the local podman CNI.
+
+Temporary orphan cleanup, per-bucket IAM restrictions, multipart streaming,
+and bounded-memory writes remain future work: S3FS currently buffers an
+entire output partition before uploading.

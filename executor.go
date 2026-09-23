@@ -23,6 +23,7 @@ type ExecResult struct {
 	Kind        StageKind
 	Manifest    *MapOutputManifest
 	Records     []any
+	Output      *PartitionOutput
 }
 
 func ExecuteTask(task Task) (ExecResult, error) {
@@ -133,6 +134,13 @@ func ExecuteTaskContext(execution context.Context, task Task) (result ExecResult
 		}
 		return ExecResult{PartitionID: task.PartitionID, Kind: StageShuffleMap, Manifest: &man}, nil
 	case StageResult:
+		if task.Job.Action == ActionSave {
+			out, err := writeOutputPartition(execution, rdd, *stage, task)
+			if err != nil {
+				return ExecResult{}, err
+			}
+			return ExecResult{PartitionID: task.PartitionID, Kind: StageResult, Output: &out}, nil
+		}
 		recs, err := executeResult(ctx, rdd, *stage, task, store)
 		if err != nil {
 			return ExecResult{}, err

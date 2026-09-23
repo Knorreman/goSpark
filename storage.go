@@ -28,6 +28,46 @@ func (LocalFS) Create(filePath string) (io.WriteCloser, error) {
 	return os.Create(filePath)
 }
 
+func (LocalFS) CreateExclusive(filePath string) (io.WriteCloser, error) {
+	f, err := os.CreateTemp(filepath.Dir(filePath), ".gospark-commit-*")
+	if err != nil {
+		return nil, err
+	}
+	return &localExclusiveWriter{File: f, final: filePath}, nil
+}
+
+type localExclusiveWriter struct {
+	*os.File
+	final  string
+	closed bool
+}
+
+func (w *localExclusiveWriter) Abort() error {
+	if w.closed {
+		return os.ErrClosed
+	}
+	w.closed = true
+	err := w.File.Close()
+	_ = os.Remove(w.Name())
+	return err
+}
+
+func (w *localExclusiveWriter) Close() error {
+	if w.closed {
+		return os.ErrClosed
+	}
+	w.closed = true
+	defer os.Remove(w.Name())
+	if err := w.File.Sync(); err != nil {
+		w.File.Close()
+		return err
+	}
+	if err := w.File.Close(); err != nil {
+		return err
+	}
+	return os.Link(w.Name(), w.final) // atomic create-if-absent on the same filesystem
+}
+
 func (LocalFS) MkdirAll(dirPath string, perm os.FileMode) error {
 	return os.MkdirAll(dirPath, perm)
 }
@@ -80,6 +120,14 @@ func (s S3FS) Create(filePath string) (io.WriteCloser, error) {
 		return nil, err
 	}
 	return objectStoreCreate(st, filePath)
+}
+
+func (s S3FS) CreateExclusive(filePath string) (io.WriteCloser, error) {
+	st, err := s.backend()
+	if err != nil {
+		return nil, err
+	}
+	return &bufPutCloser{store: st, key: filePath, exclusive: true}, nil
 }
 
 func (s S3FS) MkdirAll(_ string, _ os.FileMode) error {

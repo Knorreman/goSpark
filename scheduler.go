@@ -70,11 +70,53 @@ func ScheduleWith(spec JobSpec, runners []TaskRunner, opts ScheduleOpts) ([]any,
 }
 
 func ScheduleContext(ctx context.Context, spec JobSpec, runners []TaskRunner, opts ScheduleOpts) ([]any, error) {
+	if spec.Action == ActionSave {
+		return nil, fmt.Errorf("use ScheduleSaveContext for distributed save")
+	}
+	results, _, _, err := scheduleResults(ctx, spec, runners, opts)
+	if err != nil {
+		return nil, err
+	}
+	var records []any
+	for _, r := range results {
+		records = append(records, r.Records...)
+	}
+	return records, nil
+}
+
+func ScheduleSave(spec JobSpec, runners []TaskRunner) (OutputManifest, error) {
+	return ScheduleSaveContext(context.Background(), spec, runners, ScheduleOpts{})
+}
+
+// ScheduleSaveContext runs the same stage/recovery scheduler as Collect but
+// publishes one _SUCCESS manifest only after all selected attempts are verified.
+func ScheduleSaveContext(ctx context.Context, spec JobSpec, runners []TaskRunner, opts ScheduleOpts) (OutputManifest, error) {
+	if spec.Action != ActionSave || spec.Params["path"] == "" {
+		return OutputManifest{}, fmt.Errorf("save requires action=save and params.path")
+	}
+	if _, err := ReadCommittedOutput(spec.Params["path"]); err == nil {
+		return OutputManifest{}, ErrOutputCommitted
+	}
+	results, jobID, stageID, err := scheduleResults(ctx, spec, runners, opts)
+	if err != nil {
+		return OutputManifest{}, err
+	}
+	selected, err := SelectedOutputs(results, len(results))
+	if err != nil {
+		return OutputManifest{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return OutputManifest{}, err
+	}
+	return CommitDistributedOutput(spec.Params["path"], jobID, spec.TaskName, stageID, len(results), selected)
+}
+
+func scheduleResults(ctx context.Context, spec JobSpec, runners []TaskRunner, opts ScheduleOpts) ([]ExecResult, string, int, error) {
 	if len(runners) == 0 {
-		return nil, fmt.Errorf("no workers")
+		return nil, "", 0, fmt.Errorf("no workers")
 	}
 	if opts.MaxAttempts < 0 || opts.MaxRecoveries < 0 {
-		return nil, fmt.Errorf("negative retry limit")
+		return nil, "", 0, fmt.Errorf("negative retry limit")
 	}
 	if opts.MaxAttempts == 0 {
 		opts.MaxAttempts = 3
@@ -84,14 +126,14 @@ func ScheduleContext(ctx context.Context, spec JobSpec, runners []TaskRunner, op
 	}
 	plan, err := PlanJob(spec)
 	if err != nil {
-		return nil, err
+		return nil, "", 0, err
 	}
 	if len(orderedStages(plan)) != len(plan.Stages) {
-		return nil, fmt.Errorf("invalid stage DAG")
+		return nil, "", 0, fmt.Errorf("invalid stage DAG")
 	}
 	var id [16]byte
 	if _, err = rand.Read(id[:]); err != nil {
-		return nil, err
+		return nil, "", 0, err
 	}
 	s := &lineageScheduler{ctx: ctx, spec: spec, plan: plan, runners: runners, opts: opts, jobID: fmt.Sprintf("job-%x", id), accepted: map[taskKey]ExecResult{}, attempts: map[taskKey]int{}}
 	result, _ := stageByID(plan, plan.ResultStageID)
@@ -100,10 +142,10 @@ func ScheduleContext(ctx context.Context, spec JobSpec, runners []TaskRunner, op
 	for {
 		for p := 0; p < result.NumPartitions; p++ {
 			if _, err = s.ensure(result, p); err != nil {
-				return nil, err
+				return nil, "", 0, err
 			}
 		}
-		var records []any
+		var results []ExecResult
 		complete := true
 		for p := 0; p < result.NumPartitions; p++ {
 			r, ok := s.accepted[taskKey{result.ID, p}]
@@ -111,10 +153,10 @@ func ScheduleContext(ctx context.Context, spec JobSpec, runners []TaskRunner, op
 				complete = false
 				break
 			}
-			records = append(records, r.Records...)
+			results = append(results, r)
 		}
 		if complete {
-			return records, nil
+			return results, s.jobID, result.ID, nil
 		}
 	}
 }
@@ -210,6 +252,12 @@ func validateTaskResult(task Task, stage Stage, res ExecResult) error {
 		m := res.Manifest
 		if m == nil || m.JobID != task.JobID || m.ShuffleID != stage.ShuffleID || m.MapID != task.PartitionID || m.Attempt != task.Attempt {
 			return fmt.Errorf("stale or mismatched map attempt")
+		}
+	}
+	if stage.Kind == StageResult && task.Job.Action == ActionSave {
+		out := res.Output
+		if out == nil || out.JobID != task.JobID || out.StageID != task.StageID || out.PartitionID != task.PartitionID || out.Attempt != task.Attempt {
+			return fmt.Errorf("stale or mismatched save attempt")
 		}
 	}
 	return nil

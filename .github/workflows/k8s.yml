@@ -31,6 +31,9 @@ jobs:
       - name: Run two-pod distributed test
         run: ./k8s/two-pod.sh
 
+      - name: Kill an executor after shuffle publication and verify recovery
+        run: ./k8s/recovery.sh
+
       - name: Debug logs on failure
         if: failure()
         run: |

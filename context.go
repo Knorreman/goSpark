@@ -1,11 +1,13 @@
 package spark
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 )
 
 type Context struct {
+	execution   context.Context
 	conf        *Config
 	parallelism int
 	closed      atomic.Bool
@@ -35,6 +37,7 @@ func NewContext(conf *Config) *Context {
 		}
 	}
 	ctx := &Context{
+		execution:      context.Background(),
 		conf:           conf,
 		parallelism:    parallelism,
 		shuffleManager: NewLocalShuffleManager(),
@@ -45,6 +48,20 @@ func NewContext(conf *Config) *Context {
 }
 
 func (c *Context) Config() *Config { return c.conf }
+
+// TaskContext is canceled when the driver's task RPC is canceled or times out.
+// User callbacks performing blocking I/O should pass it to that I/O operation.
+func (c *Context) TaskContext() context.Context { return c.execution }
+
+type taskCanceled struct{ err error }
+
+func (c *Context) checkCanceled() {
+	if c != nil && c.execution != nil {
+		if err := c.execution.Err(); err != nil {
+			panic(taskCanceled{err})
+		}
+	}
+}
 
 func (c *Context) DefaultParallelism() int { return c.parallelism }
 

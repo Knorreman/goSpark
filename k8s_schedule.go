@@ -78,6 +78,16 @@ spec:
 }
 
 func K8sDriverManifest(namespace, image, taskName string, partitions, replicas int) string {
+	return k8sDriverManifest(namespace, image, taskName, partitions, replicas, 0)
+}
+
+// K8sFailureTestDriverManifest pauses once the second map output is published,
+// allowing the integration test to remove that executor before reduce starts.
+func K8sFailureTestDriverManifest(namespace, image, taskName string, partitions, replicas, pauseSeconds int) string {
+	return k8sDriverManifest(namespace, image, taskName, partitions, replicas, pauseSeconds)
+}
+
+func k8sDriverManifest(namespace, image, taskName string, partitions, replicas, pauseSeconds int) string {
 	if namespace == "" {
 		namespace = "default"
 	}
@@ -86,6 +96,10 @@ func K8sDriverManifest(namespace, image, taskName string, partitions, replicas i
 	}
 	if partitions <= 0 {
 		partitions = replicas
+	}
+	testEnv := ""
+	if pauseSeconds > 0 {
+		testEnv = fmt.Sprintf("        - name: GOSPARK_TEST_PAUSE_AFTER_MAP\n          value: %q\n", fmt.Sprint(pauseSeconds))
 	}
 	return fmt.Sprintf(`
 apiVersion: batch/v1
@@ -110,7 +124,7 @@ spec:
           value: "%d"
         - name: GOSPARK_WORKERS
           value: %q
-`, namespace, image, taskName, partitions, strings.Join(K8sWorkerURLs("gospark-exec", namespace, replicas), ","))
+%s`, namespace, image, taskName, partitions, strings.Join(K8sWorkerURLs("gospark-exec", namespace, replicas), ","), testEnv)
 }
 
 func K8sWorkerURLs(service, namespace string, replicas int) []string {

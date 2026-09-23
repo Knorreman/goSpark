@@ -2,8 +2,10 @@ package spark
 
 import (
 	"bytes"
+	"context"
 	"encoding/gob"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,11 +17,15 @@ import (
 )
 
 type execTaskResponse struct {
+	JobID       string             `json:"job_id"`
+	StageID     int                `json:"stage_id"`
+	Attempt     int                `json:"attempt"`
 	PartitionID int                `json:"partition_id"`
 	Kind        StageKind          `json:"kind"`
 	Manifest    *MapOutputManifest `json:"manifest,omitempty"`
 	RecordBlob  []byte             `json:"record_blob,omitempty"`
 	Error       string             `json:"error,omitempty"`
+	FetchError  *FetchError        `json:"fetch_error,omitempty"`
 }
 
 func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
@@ -48,11 +54,19 @@ func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		task.StoreDir = storeDir
-		res, err := ExecuteTask(task)
-		out := execTaskResponse{PartitionID: task.PartitionID}
+		res, err := ExecuteTaskContext(r.Context(), task)
+		if r.Context().Err() != nil {
+			return
+		}
+		out := execTaskResponse{JobID: task.JobID, StageID: task.StageID, Attempt: task.Attempt, PartitionID: task.PartitionID}
 		if err != nil {
 			out.Error = err.Error()
+			errors.As(err, &out.FetchError)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(out)
@@ -117,15 +131,23 @@ func decodeRecordSlice(blob []byte) ([]any, error) {
 type WorkerClient struct {
 	BaseURL string
 	// Timeout bounds each RPC, including shuffle fetch and computation on the worker.
-	Timeout time.Duration
+	Timeout           time.Duration
+	HeartbeatInterval time.Duration
 }
 
 func (c *WorkerClient) Alive() bool {
+	return c.AliveContext(context.Background())
+}
+func (c *WorkerClient) AliveContext(ctx context.Context) bool {
 	if c == nil || c.BaseURL == "" {
 		return false
 	}
 	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(strings.TrimRight(c.BaseURL, "/") + "/health")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.BaseURL, "/")+"/health", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return false
 	}
@@ -136,6 +158,10 @@ func (c *WorkerClient) Alive() bool {
 func (r localRunner) Alive() bool { return true }
 
 func (c *WorkerClient) Exec(task Task) (ExecResult, error) {
+	return c.ExecContext(context.Background(), task)
+}
+
+func (c *WorkerClient) ExecContext(parent context.Context, task Task) (ExecResult, error) {
 	body, err := json.Marshal(task)
 	if err != nil {
 		return ExecResult{}, err
@@ -145,14 +171,45 @@ func (c *WorkerClient) Exec(task Task) (ExecResult, error) {
 		timeout = 2 * time.Minute
 	}
 	client := &http.Client{Timeout: timeout}
-	resp, err := client.Post(strings.TrimRight(c.BaseURL, "/")+"/task", "application/json", bytes.NewReader(body))
+	deadline, cancelDeadline := context.WithTimeout(parent, timeout)
+	defer cancelDeadline()
+	ctx, cancel := context.WithCancelCause(deadline)
+	defer cancel(nil)
+	interval := c.HeartbeatInterval
+	if interval <= 0 {
+		interval = time.Second
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if !c.AliveContext(ctx) {
+					cancel(fmt.Errorf("worker heartbeat failed"))
+					return
+				}
+			}
+		}
+	}()
+	defer func() { cancel(nil); <-done }()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.BaseURL, "/")+"/task", bytes.NewReader(body))
 	if err != nil {
 		return ExecResult{}, err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return ExecResult{}, fmt.Errorf("worker returned HTTP %d", resp.StatusCode)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ExecResult{}, context.Cause(ctx)
+		}
+		return ExecResult{}, err
 	}
+	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return ExecResult{}, err
@@ -162,7 +219,19 @@ func (c *WorkerClient) Exec(task Task) (ExecResult, error) {
 		return ExecResult{}, fmt.Errorf("decode task response: %w %s", err, data)
 	}
 	if out.Error != "" {
+		if out.FetchError != nil {
+			return ExecResult{}, out.FetchError
+		}
 		return ExecResult{}, fmt.Errorf("%s", out.Error)
+	}
+	if out.JobID != task.JobID || out.StageID != task.StageID || out.Attempt != task.Attempt || out.PartitionID != task.PartitionID {
+		return ExecResult{}, fmt.Errorf("stale or mismatched task response")
+	}
+	if err := ctx.Err(); err != nil {
+		return ExecResult{}, context.Cause(ctx)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return ExecResult{}, fmt.Errorf("worker returned HTTP %d", resp.StatusCode)
 	}
 	res := ExecResult{PartitionID: out.PartitionID, Kind: out.Kind, Manifest: out.Manifest}
 	if len(out.RecordBlob) > 0 {

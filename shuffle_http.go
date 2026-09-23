@@ -1,6 +1,7 @@
 package spark
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -54,12 +55,20 @@ func ServeShuffle(root, addr string) (*http.Server, string, error) {
 }
 
 func FetchShuffleBucket(baseURL string, m MapOutputManifest, reduceID int, codec RecordCodec) ([]any, error) {
+	return FetchShuffleBucketContext(context.Background(), baseURL, m, reduceID, codec)
+}
+
+func FetchShuffleBucketContext(ctx context.Context, baseURL string, m MapOutputManifest, reduceID int, codec RecordCodec) ([]any, error) {
 	if codec == nil {
 		codec = DefaultCodec()
 	}
 	url := fmt.Sprintf("%s/shuffle/%s/%d/%d/%d/%d", strings.TrimRight(baseURL, "/"), m.JobID, m.ShuffleID, m.MapID, m.Attempt, reduceID)
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

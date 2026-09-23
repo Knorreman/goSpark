@@ -1,11 +1,14 @@
 package spark
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
@@ -29,9 +32,9 @@ func (r *loseOutputRunner) Exec(task Task) (ExecResult, error) {
 	return ExecuteTask(task)
 }
 
-func TestRecoveryReplaysMultiStageDAG(t *testing.T) {
+func TestRecoveryRepairsMultiStageDAG(t *testing.T) {
 	r := &loseOutputRunner{dir: t.TempDir(), ids: map[string]bool{}}
-	got, err := ScheduleWith(JobSpec{TaskName: "multi-stage-check", Action: ActionCollect, NumPartitions: 2}, []TaskRunner{r}, ScheduleOpts{MaxAttempts: 1, MaxRecoveries: 1})
+	got, err := ScheduleWith(JobSpec{TaskName: "multi-stage-check", Action: ActionCollect, NumPartitions: 2}, []TaskRunner{r}, ScheduleOpts{MaxAttempts: 1, MaxRecoveries: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,8 +45,8 @@ func TestRecoveryReplaysMultiStageDAG(t *testing.T) {
 	if !reflect.DeepEqual(values, []string{"{a 4}", "{b 2}"}) {
 		t.Fatal(values)
 	}
-	if len(r.ids) != 2 {
-		t.Fatalf("expected two isolated executions, got %d", len(r.ids))
+	if len(r.ids) != 1 {
+		t.Fatalf("expected selective recovery in one execution, got %d", len(r.ids))
 	}
 }
 
@@ -75,11 +78,54 @@ func TestRecoveryAfterWorkerProcessDeath(t *testing.T) {
 	a, kill := startKillableWorker(t)
 	b := startTestWorker(t)
 	r := &killAfterMap{client: a, kill: kill}
-	got, err := ScheduleWith(JobSpec{TaskName: "multi-stage-check", Action: ActionCollect, NumPartitions: 2}, []TaskRunner{r, b}, ScheduleOpts{MaxAttempts: 1, MaxRecoveries: 2})
+	counts := make(map[taskKey]int)
+	ids := make(map[string]bool)
+	var mu sync.Mutex
+	got, err := ScheduleWith(JobSpec{TaskName: "multi-stage-check", Action: ActionCollect, NumPartitions: 2}, []TaskRunner{r, b}, ScheduleOpts{MaxAttempts: 1, MaxRecoveries: 2, OnTaskComplete: func(task Task, res ExecResult) error {
+		mu.Lock()
+		defer mu.Unlock()
+		counts[taskKey{task.StageID, task.PartitionID}]++
+		ids[task.JobID] = true
+		return nil
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 2 || fmt.Sprint(got[0]) != "{a 4}" || fmt.Sprint(got[1]) != "{b 2}" {
 		t.Fatal(got)
+	}
+	if len(ids) != 1 || counts[taskKey{0, 0}] != 2 || counts[taskKey{0, 1}] != 1 {
+		t.Fatalf("expected selective recovery in one job, ids=%v maps=%v", ids, counts)
+	}
+}
+
+func TestWorkerReportsTypedFetchFailure(t *testing.T) {
+	spec := JobSpec{TaskName: "sched-wc", Action: ActionCollect, NumPartitions: 2}
+	plan, err := PlanJob(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	var maps []MapOutputManifest
+	for p := 0; p < 2; p++ {
+		r, err := ExecuteTask(Task{JobID: "fetch-test", Job: spec, StageID: plan.Stages[0].ID, PartitionID: p, StoreDir: dir, Fingerprint: plan.Fingerprint})
+		if err != nil {
+			t.Fatal(err)
+		}
+		maps = append(maps, *r.Manifest)
+	}
+	if err := os.Remove(filepath.Join(maps[1].Location, bucketName(0))); err != nil {
+		t.Fatal(err)
+	}
+	srv, addr, err := ServeWorker(dir, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	client := &WorkerClient{BaseURL: "http://" + addr}
+	_, err = client.Exec(Task{JobID: "fetch-test", Job: spec, StageID: plan.ResultStageID, PartitionID: 0, Upstream: maps, Fingerprint: plan.Fingerprint})
+	var fetch *FetchError
+	if !errors.As(err, &fetch) || fetch.ShuffleID != maps[1].ShuffleID || fetch.MapID != 1 || fetch.JobID != "fetch-test" {
+		t.Fatalf("expected typed missing map output, got %v", err)
 	}
 }

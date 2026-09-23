@@ -390,11 +390,29 @@ func runSchedule() {
 		fmt.Fprintf(os.Stderr, "wait workers: %v\n", err)
 		os.Exit(1)
 	}
-	recs, err := spark.Schedule(spark.JobSpec{
+	var opts spark.ScheduleOpts
+	if secs, _ := strconv.Atoi(os.Getenv("GOSPARK_TEST_PAUSE_AFTER_MAP")); secs > 0 {
+		paused := false
+		opts.OnRepair = func(e spark.FetchError) {
+			fmt.Printf("SHUFFLE_LOST shuffle=%d map=%d\n", e.ShuffleID, e.MapID)
+		}
+		opts.OnTaskComplete = func(task spark.Task, res spark.ExecResult) error {
+			if res.Manifest != nil && task.Attempt > 0 {
+				fmt.Printf("MAP_REBUILT shuffle=%d map=%d attempt=%d\n", res.Manifest.ShuffleID, res.Manifest.MapID, task.Attempt)
+			}
+			if res.Manifest != nil && task.PartitionID == 1 && !paused {
+				paused = true
+				fmt.Printf("MAP_PUBLISHED shuffle=%d map=%d\n", res.Manifest.ShuffleID, res.Manifest.MapID)
+				time.Sleep(time.Duration(secs) * time.Second)
+			}
+			return nil
+		}
+	}
+	recs, err := spark.ScheduleWith(spark.JobSpec{
 		TaskName:      taskName,
 		Action:        spark.ActionCollect,
 		NumPartitions: np,
-	}, runners)
+	}, runners, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "schedule failed: %v\n", err)
 		os.Exit(1)
@@ -436,7 +454,11 @@ func runPrintK8s() {
 	case "exec":
 		fmt.Print(spark.K8sExecutorManifest(ns, image, 2))
 	case "driver":
-		fmt.Print(spark.K8sDriverManifest(ns, image, task, 2, 2))
+		if secs, _ := strconv.Atoi(os.Getenv("GOSPARK_TEST_PAUSE_AFTER_MAP")); secs > 0 {
+			fmt.Print(spark.K8sFailureTestDriverManifest(ns, image, task, 2, 2, secs))
+		} else {
+			fmt.Print(spark.K8sDriverManifest(ns, image, task, 2, 2))
+		}
 	default:
 		fmt.Print(spark.K8sExecutorManifest(ns, image, 2))
 		fmt.Println("---")

@@ -87,6 +87,12 @@ func (r *RDD[T]) Dependencies() []Dependency {
 }
 
 func (r *RDD[T]) Compute(partition Partition) Iterator[T] {
+	r.ctx.checkCanceled()
+	it := r.computePartition(partition)
+	return func() (T, bool) { r.ctx.checkCanceled(); v, ok := it(); r.ctx.checkCanceled(); return v, ok }
+}
+
+func (r *RDD[T]) computePartition(partition Partition) Iterator[T] {
 	level := r.storageLevel
 	if level == StorageNone || r.ctx == nil {
 		return r.computeFn(partition)

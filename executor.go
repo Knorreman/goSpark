@@ -1,6 +1,7 @@
 package spark
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,6 +26,23 @@ type ExecResult struct {
 }
 
 func ExecuteTask(task Task) (ExecResult, error) {
+	return ExecuteTaskContext(context.Background(), task)
+}
+
+func ExecuteTaskContext(execution context.Context, task Task) (result ExecResult, taskErr error) {
+	defer func() {
+		if v := recover(); v != nil {
+			if c, ok := v.(taskCanceled); ok {
+				result = ExecResult{}
+				taskErr = c.err
+			} else {
+				panic(v)
+			}
+		}
+	}()
+	if err := execution.Err(); err != nil {
+		return ExecResult{}, err
+	}
 	if task.StoreDir == "" {
 		return ExecResult{}, fmt.Errorf("task StoreDir is required")
 	}
@@ -63,6 +81,7 @@ func ExecuteTask(task Task) (ExecResult, error) {
 		NumPartitions: task.Job.NumPartitions,
 	})
 	defer ctx.Stop()
+	ctx.execution = execution
 	rdd, err := factory(ctx, task.Job)
 	if err != nil {
 		return ExecResult{}, err
@@ -72,6 +91,7 @@ func ExecuteTask(task Task) (ExecResult, error) {
 		jobID = task.Job.TaskName
 	}
 	store := NewDiskShuffleStore(task.StoreDir)
+	store.codec = cancelCodec{ctx: execution, RecordCodec: store.codec}
 	actual, err := PlanRDD(rdd, task.Job)
 	if err != nil || actual.Fingerprint != plan.Fingerprint {
 		return ExecResult{}, fmt.Errorf("job factory changed graph during reconstruction")
@@ -135,7 +155,8 @@ func executeShuffleMap(_ *Context, root RDDAny, stage Stage, task Task, jobID st
 		spills[i] = &spillAcc{}
 	}
 	spillDir := filepath.Join(task.StoreDir, "_spill", jobID, fmt.Sprintf("s%d-m%d-a%d", stage.ShuffleID, task.PartitionID, task.Attempt))
-	codec := DefaultCodec()
+	defer os.RemoveAll(spillDir)
+	codec := store.codec
 	if ok {
 		iter := parent.ComputeAny(part)
 		partitioner := dep.GetPartitioner()
@@ -162,7 +183,14 @@ func executeShuffleMap(_ *Context, root RDDAny, stage Stage, task Task, jobID st
 		}
 		buckets[rid] = combineMapOutput(recs, dep)
 	}
-	return store.WriteMap(jobID, stage.ShuffleID, task.PartitionID, task.Attempt, stage.NumReducers, buckets)
+	manifest, err := store.WriteMap(jobID, stage.ShuffleID, task.PartitionID, task.Attempt, stage.NumReducers, buckets)
+	if err == nil {
+		if canceled := root.Ctx().TaskContext().Err(); canceled != nil {
+			_ = os.RemoveAll(manifest.Location)
+			return MapOutputManifest{}, canceled
+		}
+	}
+	return manifest, err
 }
 
 func executeResult(ctx *Context, root RDDAny, stage Stage, task Task, store *DiskShuffleStore) ([]any, error) {
@@ -202,9 +230,9 @@ func installUpstream(ctx *Context, stage Stage, task Task, store *DiskShuffleSto
 		for _, m := range maps {
 			buckets := make(map[int][]any)
 			for _, bucket := range m.Buckets {
-				recs, err := readUpstreamBucket(store, m, bucket.ReduceID)
+				recs, err := readUpstreamBucketContext(ctx.TaskContext(), store, m, bucket.ReduceID)
 				if err != nil {
-					return err
+					return &FetchError{JobID: m.JobID, ShuffleID: m.ShuffleID, MapID: m.MapID, Attempt: m.Attempt, Reason: err.Error()}
 				}
 				buckets[bucket.ReduceID] = recs
 			}
@@ -215,8 +243,15 @@ func installUpstream(ctx *Context, stage Stage, task Task, store *DiskShuffleSto
 }
 
 func readUpstreamBucket(store *DiskShuffleStore, m MapOutputManifest, reduceID int) ([]any, error) {
+	return readUpstreamBucketContext(context.Background(), store, m, reduceID)
+}
+
+func readUpstreamBucketContext(ctx context.Context, store *DiskShuffleStore, m MapOutputManifest, reduceID int) ([]any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if m.BaseURL != "" {
-		return FetchShuffleBucket(m.BaseURL, m, reduceID, DefaultCodec())
+		return FetchShuffleBucketContext(ctx, m.BaseURL, m, reduceID, store.codec)
 	}
 	if m.Location != "" {
 		path := filepath.Join(m.Location, bucketName(reduceID))

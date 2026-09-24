@@ -1081,10 +1081,8 @@ func TestPersistDisk(t *testing.T) {
 }
 
 func TestSpillShuffleStillCorrect(t *testing.T) {
-	old := SpillRecordLimit
-	SpillRecordLimit = 1
-	defer func() { SpillRecordLimit = old }()
 	ctx := newTestContext()
+	ctx.Config().ShuffleMemoryBytes = 256
 	defer ctx.Stop()
 	pairs := Map(Parallelize(ctx, []string{"a", "a", "b"}, 2), func(s string) Pair[string, int] {
 		return NewPair(s, 1)

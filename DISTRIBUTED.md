@@ -14,17 +14,17 @@ Fingerprints describe the existing planner's stage structure and JobSpec;
 they do not hash Go function bodies or guarantee arbitrary closures are equal.
 Use identical application builds and deterministic factories on all workers.
 
-SortByKey is now lazy and executable by remote tasks. This initial algorithm
-shuffles all records into one bucket; each output task sorts the global input
-and emits its contiguous ordered slice. Schedule collects those slices in
-partition order. This is a correctness baseline, not a scalable range sort:
-memory per task is proportional to the full input. Sampled range boundaries,
-external merge sorting, and bounded-memory reducer execution remain open.
+SortByKey is lazy and executable by remote tasks. It currently shuffles records
+into one bucket; each output task externally sorts the global input and emits
+its contiguous ordered slice. Both Schedule and Collect concatenate partitions
+in order. Runs spill under the configured byte budget and merge two at a time.
+This bounds sorting memory, but still repeats sorting and I/O for each result
+partition: sampled range partitioning remains future work.
 
-Upstream installation currently loads all buckets to support narrow dependencies
-whose partition mapping differs from the task index (e.g. coalescing). Optimized
-dependency-aware fetching remains open. Executor-loss recovery for arbitrary
-multi-stage DAGs and distributed cache reuse also remain separate work.
+Upstream installation downloads buckets to task-local disk using bounded buffers,
+validates frame/manifest checksums, and reads records incrementally. All buckets
+are still fetched to support narrow dependencies whose mapping differs from the
+task index. Dependency-aware fetching and distributed cache reuse remain open.
 
 ## Recovery and cancellation
 
@@ -89,6 +89,50 @@ shuffle, injected save retry, and exact MinIO results with the scheduler on
 executor 0. The separate driver Job path requires Docker-based CI because
 newly created Job pods cannot reliably reach the local podman CNI.
 
-Temporary orphan cleanup, per-bucket IAM restrictions, multipart streaming,
-and bounded-memory writes remain future work: S3FS currently buffers an
-entire output partition before uploading.
+S3 partition output uses sequential multipart uploads with an 8 MiB buffer and
+backpressure. Close completes the upload; cancellation, write failure, or Abort
+aborts unfinished multipart uploads. Small/empty objects use PutObject. Conditional
+_SUCCESS writes still use a single PutObject. The current part size limits a
+single upload to 10,000 parts (about 78 GiB); larger objects fail explicitly.
+Temporary orphan cleanup and per-bucket IAM restrictions remain future work.
+
+## Memory budgets and limits
+
+Configure these on `Config`, or on `ctx.Config()` inside a registered job factory
+so every worker reconstructs the same settings:
+
+```go
+ctx.Config().ShuffleMemoryBytes = 1 << 20 // encoded sort/combining run budget
+ctx.Config().MaxRecordBytes = 4 << 20     // largest encoded record / TextFile line
+ctx.Config().MaxGroupBytes = 1 << 20      // materialized group/combiner limit
+```
+
+Defaults are 16 MiB for sort/combining runs and groups, and 4 MiB per record.
+The old global `SpillRecordLimit` has been replaced by per-context byte budgets.
+Budgets measure encoded data plus per-record bookkeeping, **not total heap/RSS**:
+allow headroom for decoded Go objects, the runtime, codec buffers, and callbacks.
+A single record must fit the run budget; input records and groups that exceed
+limits fail explicitly. Callback allocations are outside these budgets.
+
+Local and remote shuffle maps write framed records straight to disk with at most
+16 open, 32 KiB buffered files. ReduceByKey and CombineByKey externally order
+records by key, then aggregate one key at a time. GroupByKey enforces an encoded
+per-group size limit because its `[]V` API cannot represent an arbitrarily large
+group without materializing it. Cogroup streams groups; joins emit cross-products
+lazily. ReduceByKey map-side combining flushes bounded batches. Grouping supports
+value keys (strings, numbers, booleans, structs, arrays); process-local pointer/
+channel keys and NaNs are rejected.
+
+`Collect`, `Schedule` with collect, explicit caching, and user-created slices still
+materialize data by design. Use `ScheduleSave`, iterator consumption, or Count
+for outputs larger than memory. Disk space is not quota-managed yet. Sort/fetch
+scratch files are owned by the Context and cleaned on Stop (task contexts Stop
+on both success and failure); published map outputs must remain for reducers.
+
+The memory CI job streams a **320 MiB** dataset through external sort and a
+high-cardinality/skewed ReduceByKey inside a **128 MiB** container (swap disabled,
+GOMEMLIMIT=64MiB), checking every sorted record and aggregate. Local validation
+passed in about 41 seconds with a sampled peak Go heap around 4 MiB. This verifies
+that fixture, not an RSS bound for arbitrary Go types/callbacks.
+`TestMinIOMultipartStreaming` verifies 20 MiB uploads plus cancellation, abort,
+failed part uploads, and that no unfinished multipart uploads remain.

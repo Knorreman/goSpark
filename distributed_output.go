@@ -52,7 +52,14 @@ func writeOutputPartition(ctx context.Context, root RDDAny, stage Stage, task Ta
 	if !ok {
 		return result, fmt.Errorf("partition %d not found", task.PartitionID)
 	}
-	w, err := fs.Create(key)
+	var w io.WriteCloser
+	if streaming, ok := fs.(interface {
+		CreateContext(context.Context, string) (io.WriteCloser, error)
+	}); ok {
+		w, err = streaming.CreateContext(ctx, key)
+	} else {
+		w, err = fs.Create(key)
+	}
 	if err != nil {
 		return result, err
 	}
@@ -60,7 +67,11 @@ func writeOutputPartition(ctx context.Context, root RDDAny, stage Stage, task Ta
 	closed := false
 	defer func() {
 		if !closed {
-			_ = w.Close()
+			if abort, ok := w.(interface{ Abort() error }); ok {
+				_ = abort.Abort()
+			} else {
+				_ = w.Close()
+			}
 		}
 		if !committed {
 			_ = fs.Remove(key)

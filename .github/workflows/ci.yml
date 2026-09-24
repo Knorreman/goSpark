@@ -9,6 +9,24 @@ permissions:
   contents: read
 
 jobs:
+  memory-limit:
+    name: Sort and skewed aggregation exceed RAM (128 MiB executor)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+      - name: Build static memory-test binary
+        run: CGO_ENABLED=0 go test -c -o /tmp/gospark-memory.test .
+      - name: Process 320 MiB under a hard 128 MiB memory limit
+        run: |
+          docker run --rm --memory=128m --memory-swap=128m \
+            -e GOMEMLIMIT=64MiB -e GOSPARK_MEMORY_STRESS=1 \
+            -v /tmp/gospark-memory.test:/bench:ro \
+            alpine:3.19 /bench -test.run '^TestBoundedLargeInput$' -test.v -test.timeout=15m
   build-test:
     name: Build and Test (Go ${{ matrix.go }})
     runs-on: ubuntu-latest
@@ -106,7 +124,7 @@ jobs:
       - name: Test real S3-compatible commits and retries
         env:
           GOSPARK_TEST_S3_ENDPOINT: http://127.0.0.1:19000
-        run: go test -race -count=1 -timeout 180s -run '^TestMinIODistributedSave$' .
+        run: go test -race -count=1 -timeout 180s -run '^TestMinIO' .
       - name: Stop MinIO
         if: always()
         run: docker rm -f gospark-minio || true

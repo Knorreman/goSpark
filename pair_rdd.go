@@ -1,6 +1,6 @@
 package spark
 
-import "sort"
+import "io"
 
 func ReduceByKey[K comparable, V any](rdd *RDD[Pair[K, V]], partitioner Partitioner, fn func(V, V) V) *RDD[Pair[K, V]] {
 	return NewReduceByKeyRDD(rdd, partitioner, fn)
@@ -69,28 +69,7 @@ func NewReduceByKeyRDD[K comparable, V any](rdd *RDD[Pair[K, V]], partitioner Pa
 }
 
 func newReduceShuffleRead[K comparable, V any](ctx *Context, shuffleID int, reduceID int, numMaps int, fn func(V, V) V) Iterator[Pair[K, V]] {
-	blocks := ctx.ShuffleManager().ReadReduceOutput(shuffleID, reduceID, numMaps)
-	grouped := make(map[K]V)
-	found := make(map[K]bool)
-	for _, block := range blocks {
-		for _, item := range block {
-			pair, ok := item.(Pair[K, V])
-			if !ok {
-				continue
-			}
-			if found[pair.Key] {
-				grouped[pair.Key] = fn(grouped[pair.Key], pair.Value)
-			} else {
-				grouped[pair.Key] = pair.Value
-				found[pair.Key] = true
-			}
-		}
-	}
-	result := make([]Pair[K, V], 0, len(grouped))
-	for k, v := range grouped {
-		result = append(result, NewPair(k, v))
-	}
-	return SliceIterator(result)
+	return aggregatePairs[K, V, V](ctx, shuffleID, reduceID, numMaps, func(v V) V { return v }, fn, ctx.groupBytes())
 }
 
 type groupByKeyRDD[K comparable, V any] struct {
@@ -127,22 +106,7 @@ func NewGroupByKeyRDD[K comparable, V any](rdd *RDD[Pair[K, V]], partitioner Par
 }
 
 func groupShuffleRead[K comparable, V any](ctx *Context, shuffleID int, reduceID int, numMaps int) Iterator[Pair[K, []V]] {
-	blocks := ctx.ShuffleManager().ReadReduceOutput(shuffleID, reduceID, numMaps)
-	grouped := make(map[K][]V)
-	for _, block := range blocks {
-		for _, item := range block {
-			pair, ok := item.(Pair[K, V])
-			if !ok {
-				continue
-			}
-			grouped[pair.Key] = append(grouped[pair.Key], pair.Value)
-		}
-	}
-	result := make([]Pair[K, []V], 0, len(grouped))
-	for k, v := range grouped {
-		result = append(result, NewPair(k, v))
-	}
-	return SliceIterator(result)
+	return boundedGroups[K, V](ctx, shuffleID, reduceID, numMaps)
 }
 
 func Join[K comparable, V any, W any](rdd1 *RDD[Pair[K, V]], rdd2 *RDD[Pair[K, W]], partitioner Partitioner) *RDD[Pair[K, Pair[V, W]]] {
@@ -159,54 +123,57 @@ func RightOuterJoin[K comparable, V any, W any](rdd1 *RDD[Pair[K, V]], rdd2 *RDD
 
 func NewJoinRDD[K comparable, V any, W any](rdd1 *RDD[Pair[K, V]], rdd2 *RDD[Pair[K, W]], partitioner Partitioner) *RDD[Pair[K, Pair[V, W]]] {
 	cogrouped := Cogroup(rdd1, rdd2, partitioner)
-	return FlatMap(cogrouped, func(p Pair[K, Pair[[]V, []W]]) []Pair[K, Pair[V, W]] {
-		var result []Pair[K, Pair[V, W]]
-		for _, v := range p.Value.Key {
-			for _, w := range p.Value.Value {
-				result = append(result, NewPair(p.Key, NewPair(v, w)))
+	return MapPartitions(cogrouped, func(groups Iterator[Pair[K, Pair[[]V, []W]]]) Iterator[Pair[K, Pair[V, W]]] {
+		return expandIterator(groups, func(p Pair[K, Pair[[]V, []W]]) Iterator[Pair[K, Pair[V, W]]] {
+			i, j := 0, 0
+			return func() (Pair[K, Pair[V, W]], bool) {
+				if i >= len(p.Value.Key) || len(p.Value.Value) == 0 {
+					return Pair[K, Pair[V, W]]{}, false
+				}
+				out := NewPair(p.Key, NewPair(p.Value.Key[i], p.Value.Value[j]))
+				j++
+				if j == len(p.Value.Value) {
+					j = 0
+					i++
+				}
+				return out, true
 			}
-		}
-		return result
+		})
 	})
 }
 
 func NewLeftOuterJoinRDD[K comparable, V any, W any](rdd1 *RDD[Pair[K, V]], rdd2 *RDD[Pair[K, W]], partitioner Partitioner) *RDD[Pair[K, Pair[V, *W]]] {
 	cogrouped := Cogroup(rdd1, rdd2, partitioner)
-	return FlatMap(cogrouped, func(p Pair[K, Pair[[]V, []W]]) []Pair[K, Pair[V, *W]] {
-		var result []Pair[K, Pair[V, *W]]
-		vs := p.Value.Key
-		ws := p.Value.Value
-		for _, v := range vs {
-			if len(ws) > 0 {
-				for _, w := range ws {
-					w := w
-					result = append(result, NewPair(p.Key, NewPair(v, &w)))
+	return MapPartitions(cogrouped, func(groups Iterator[Pair[K, Pair[[]V, []W]]]) Iterator[Pair[K, Pair[V, *W]]] {
+		return expandIterator(groups, func(p Pair[K, Pair[[]V, []W]]) Iterator[Pair[K, Pair[V, *W]]] {
+			i, j := 0, 0
+			return func() (Pair[K, Pair[V, *W]], bool) {
+				if i >= len(p.Value.Key) {
+					return Pair[K, Pair[V, *W]]{}, false
 				}
-			} else {
-				result = append(result, NewPair(p.Key, NewPair(v, (*W)(nil))))
+				v := p.Value.Key[i]
+				var w *W
+				if len(p.Value.Value) > 0 {
+					x := p.Value.Value[j]
+					w = &x
+					j++
+					if j == len(p.Value.Value) {
+						j = 0
+						i++
+					}
+				} else {
+					i++
+				}
+				return NewPair(p.Key, NewPair(v, w)), true
 			}
-		}
-		return result
+		})
 	})
 }
 
 func NewRightOuterJoinRDD[K comparable, V any, W any](rdd1 *RDD[Pair[K, V]], rdd2 *RDD[Pair[K, W]], partitioner Partitioner) *RDD[Pair[K, Pair[*V, W]]] {
-	cogrouped := Cogroup(rdd1, rdd2, partitioner)
-	return FlatMap(cogrouped, func(p Pair[K, Pair[[]V, []W]]) []Pair[K, Pair[*V, W]] {
-		var result []Pair[K, Pair[*V, W]]
-		vs := p.Value.Key
-		ws := p.Value.Value
-		for _, w := range ws {
-			if len(vs) > 0 {
-				for _, v := range vs {
-					v := v
-					result = append(result, NewPair(p.Key, NewPair(&v, w)))
-				}
-			} else {
-				result = append(result, NewPair(p.Key, NewPair((*V)(nil), w)))
-			}
-		}
-		return result
+	left := NewLeftOuterJoinRDD(rdd2, rdd1, partitioner)
+	return Map(left, func(p Pair[K, Pair[W, *V]]) Pair[K, Pair[*V, W]] {
+		return NewPair(p.Key, NewPair(p.Value.Value, p.Value.Key))
 	})
 }
 
@@ -233,26 +200,28 @@ func newCogroupRDD[K comparable, V any, W any](rdd1 *RDD[Pair[K, V]], rdd2 *RDD[
 		},
 		func(partition Partition) Iterator[Pair[K, Pair[[]V, []W]]] {
 			idx := partition.Index()
-			g1 := CollectIterator(grouped1.Compute(NewPartition(idx)))
-			g2 := CollectIterator(grouped2.Compute(NewPartition(idx)))
-
-			combined := make(map[K]Pair[[]V, []W])
-			for _, p := range g1 {
-				val := combined[p.Key]
-				val.Key = p.Value
-				combined[p.Key] = val
+			g1, g2 := grouped1.Compute(NewPartition(idx)), grouped2.Compute(NewPartition(idx))
+			a, oka := g1()
+			b, okb := g2()
+			return func() (Pair[K, Pair[[]V, []W]], bool) {
+				if !oka && !okb {
+					return Pair[K, Pair[[]V, []W]]{}, false
+				}
+				if oka && okb && a.Key == b.Key {
+					out := NewPair(a.Key, NewPair(a.Value, b.Value))
+					a, oka = g1()
+					b, okb = g2()
+					return out, true
+				}
+				if !okb || (oka && keyToken(a.Key) < keyToken(b.Key)) {
+					out := NewPair(a.Key, NewPair(a.Value, []W(nil)))
+					a, oka = g1()
+					return out, true
+				}
+				out := NewPair(b.Key, NewPair([]V(nil), b.Value))
+				b, okb = g2()
+				return out, true
 			}
-			for _, p := range g2 {
-				val := combined[p.Key]
-				val.Value = p.Value
-				combined[p.Key] = val
-			}
-
-			result := make([]Pair[K, Pair[[]V, []W]], 0, len(combined))
-			for k, v := range combined {
-				result = append(result, NewPair(k, v))
-			}
-			return SliceIterator(result)
 		},
 		WithPartitioner[Pair[K, Pair[[]V, []W]]](partitioner),
 	)
@@ -267,32 +236,37 @@ func SortByKey[K comparable, V any](rdd *RDD[Pair[K, V]], less func(K, K) bool, 
 		np = 1
 	}
 	// Correctness-first global sort: all map outputs are available to each
-	// result task. Range sampling and external merge sorting are future work.
+	// result task. External merge sorting bounds RAM; range sampling is future work.
 	sid := rdd.ctx.nextShuffleID()
 	return NewRDD[Pair[K, V]](rdd.ctx,
 		func() []Partition { return NewPartitions(np) },
 		func() []Dependency { return []Dependency{NewShuffleDep(rdd, NewHashPartitioner(1), sid, false, nil)} },
 		func(p Partition) Iterator[Pair[K, V]] {
-			data := CollectIterator(readShuffleReduceOutput[K, V](rdd.ctx, sid, 0, len(rdd.Partitions())))
-			sort.SliceStable(data, func(i, j int) bool {
+			stream, n := externalSort(rdd.ctx, shuffleStream(rdd.ctx, sid, 0, len(rdd.Partitions())), func(a, b any) bool {
+				left, right := a.(Pair[K, V]), b.(Pair[K, V])
 				if ascending {
-					return less(data[i].Key, data[j].Key)
+					return less(left.Key, right.Key)
 				}
-				return less(data[j].Key, data[i].Key)
+				return less(right.Key, left.Key)
 			})
-			return SliceIterator(data[p.Index()*len(data)/np : (p.Index()+1)*len(data)/np])
-		})
-}
-
-func sortSlice[K comparable, V any](data []Pair[K, V], less func(i, j int) bool) {
-	n := len(data)
-	for i := 0; i < n-1; i++ {
-		for j := i + 1; j < n; j++ {
-			if less(j, i) {
-				data[i], data[j] = data[j], data[i]
+			start, end := p.Index()*n/np, (p.Index()+1)*n/np
+			i := 0
+			return func() (Pair[K, V], bool) {
+				for i < end {
+					v, err := stream.Next()
+					if err == io.EOF {
+						break
+					}
+					must(err)
+					i++
+					if i > start {
+						return v.(Pair[K, V]), true
+					}
+				}
+				must(stream.Close())
+				return Pair[K, V]{}, false
 			}
-		}
-	}
+		})
 }
 
 func AggregateByKey[K comparable, V any, U any](rdd *RDD[Pair[K, V]], zeroValue U, seqOp func(U, V) U, combOp func(U, U) U, partitioner Partitioner) *RDD[Pair[K, U]] {
@@ -344,28 +318,7 @@ func newCombineByKeyRDD[K comparable, V any, C any](
 			}
 		},
 		func(partition Partition) Iterator[Pair[K, C]] {
-			blocks := ctx.ShuffleManager().ReadReduceOutput(shuffleID, partition.Index(), len(parent.Partitions()))
-			combined := make(map[K]C)
-			found := make(map[K]bool)
-			for _, block := range blocks {
-				for _, item := range block {
-					pair, ok := item.(Pair[K, V])
-					if !ok {
-						continue
-					}
-					if found[pair.Key] {
-						combined[pair.Key] = mergeValue(combined[pair.Key], pair.Value)
-					} else {
-						combined[pair.Key] = createCombiner(pair.Value)
-						found[pair.Key] = true
-					}
-				}
-			}
-			result := make([]Pair[K, C], 0, len(combined))
-			for k, v := range combined {
-				result = append(result, NewPair(k, v))
-			}
-			return SliceIterator(result)
+			return aggregatePairs[K, V, C](ctx, shuffleID, partition.Index(), len(parent.Partitions()), createCombiner, mergeValue, ctx.groupBytes())
 		},
 		WithPartitioner[Pair[K, C]](partitioner),
 	)

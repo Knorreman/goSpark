@@ -229,9 +229,12 @@ func shuffleRepartition[T any](rdd *RDD[T], numPartitions int) *RDD[T] {
 			return NewPair(key, v), true
 		}
 	})
-	grouped := GroupByKey(keyed, NewPartitionIdPassthrough(numPartitions))
-	return FlatMap(grouped, func(p Pair[int, []T]) []T {
-		return p.Value
+	sid := rdd.ctx.nextShuffleID()
+	p := NewPartitionIdPassthrough(numPartitions)
+	return NewRDD[T](rdd.ctx, func() []Partition { return NewPartitions(numPartitions) }, func() []Dependency {
+		return []Dependency{NewShuffleDep(keyed, p, sid, false, nil, func(v any) any { return v.(Pair[int, T]).Key })}
+	}, func(part Partition) Iterator[T] {
+		return MapIterator(readShuffleReduceOutput[int, T](rdd.ctx, sid, part.Index(), len(keyed.Partitions())), func(v Pair[int, T]) T { return v.Value })
 	})
 }
 

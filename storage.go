@@ -1,6 +1,7 @@
 package spark
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -115,9 +116,16 @@ func (s S3FS) backend() (ObjectStore, error) {
 }
 
 func (s S3FS) Create(filePath string) (io.WriteCloser, error) {
+	return s.CreateContext(context.Background(), filePath)
+}
+
+func (s S3FS) CreateContext(ctx context.Context, filePath string) (io.WriteCloser, error) {
 	st, err := s.backend()
 	if err != nil {
 		return nil, err
+	}
+	if aws, ok := st.(*awsS3Store); ok {
+		return aws.writer(ctx, filePath), nil
 	}
 	return objectStoreCreate(st, filePath)
 }

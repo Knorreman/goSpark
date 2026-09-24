@@ -1,7 +1,6 @@
 package spark
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -9,22 +8,22 @@ import (
 
 func Collect[T any](rdd *RDD[T]) []T {
 	computeShuffleStages(rdd)
-	var mu sync.Mutex
 	var result []T
 	partitions := rdd.Partitions()
+	byPartition := make([][]T, len(partitions))
 	var wg sync.WaitGroup
 	wg.Add(len(partitions))
-	for _, p := range partitions {
-		go func(partition Partition) {
+	for i, p := range partitions {
+		go func(index int, partition Partition) {
 			defer wg.Done()
 			iter := rdd.Compute(partition)
-			data := CollectIterator(iter)
-			mu.Lock()
-			result = append(result, data...)
-			mu.Unlock()
-		}(p)
+			byPartition[index] = CollectIterator(iter)
+		}(i, p)
 	}
 	wg.Wait()
+	for _, data := range byPartition {
+		result = append(result, data...)
+	}
 	return result
 }
 
@@ -205,53 +204,22 @@ func computeShuffleStages(rddAny RDDAny) {
 				continue
 			}
 			partitions := parent.Partitions()
-			partitioner := shuffleDep.partitioner
 			shuffleID := shuffleDep.shuffleID
-			numReduceParts := partitioner.NumPartitions()
 			ctx := parent.Ctx()
 			ctx.ShuffleManager().RegisterShuffle(shuffleID)
-
-			var mu sync.Mutex
-			var wg sync.WaitGroup
-			wg.Add(len(partitions))
+			dir, err := os.MkdirTemp(ctx.disk.dir, "local-stage-")
+			must(err)
+			store := NewDiskShuffleStore(dir)
+			store.codec = cancelCodec{ctx: ctx.TaskContext(), RecordCodec: DefaultCodec()}
 			for _, p := range partitions {
-				go func(partition Partition) {
-					defer wg.Done()
-					iter := parent.ComputeAny(partition)
-					spills := make(map[int]*spillAcc, numReduceParts)
-					for i := 0; i < numReduceParts; i++ {
-						spills[i] = &spillAcc{}
-					}
-					spillDir := filepath.Join(os.TempDir(), "gospark-spill", fmt.Sprintf("%d-%d", shuffleID, partition.Index()))
-					codec := DefaultCodec()
-					for {
-						item, ok := iter()
-						if !ok {
-							break
-						}
-						key := shuffleDep.ExtractKey(item)
-						var reduceID int
-						if key != nil {
-							reduceID = partitioner.GetPartition(key)
-						} else {
-							reduceID = 0
-						}
-						_ = spills[reduceID].add(item, spillDir, codec)
-					}
-					buckets := make(map[int][]any, numReduceParts)
-					for i := 0; i < numReduceParts; i++ {
-						recs, err := spills[i].collect(codec)
-						if err != nil {
-							recs = nil
-						}
-						buckets[i] = combineMapOutput(recs, shuffleDep)
-					}
-					mu.Lock()
-					ctx.ShuffleManager().WriteMapOutput(shuffleID, partition.Index(), buckets)
-					mu.Unlock()
-				}(p)
+				manifest, err := writeStreamMap(ctx, store, shuffleDep, p, "local", p.Index(), 0)
+				must(err)
+				paths := map[int]string{}
+				for _, b := range manifest.Buckets {
+					paths[b.ReduceID] = filepath.Join(manifest.Location, bucketName(b.ReduceID))
+				}
+				ctx.ShuffleManager().(*fileShuffleManager).install(shuffleID, p.Index(), paths)
 			}
-			wg.Wait()
 		}
 	}
 }

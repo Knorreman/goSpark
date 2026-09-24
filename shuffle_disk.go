@@ -158,43 +158,20 @@ func writeBucketFile(path string, codec RecordCodec, recs []any) (ShuffleBucketM
 }
 
 func readBucketFile(path string, codec RecordCodec) ([]any, error) {
-	f, err := os.Open(path)
+	r, err := openBucketFile(path, codec, defaultRecordBytes)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	var magic [4]byte
-	if _, err := io.ReadFull(f, magic[:]); err != nil {
-		return nil, fmt.Errorf("truncated magic: %w", err)
-	}
-	if magic != shuffleMagic {
-		return nil, fmt.Errorf("bad magic %q", magic)
-	}
-	var hdr [4]byte
-	if _, err := io.ReadFull(f, hdr[:]); err != nil {
-		return nil, fmt.Errorf("truncated count: %w", err)
-	}
-	n := binary.BigEndian.Uint32(hdr[:])
-	out := make([]any, 0, n)
-	for i := uint32(0); i < n; i++ {
-		var recHdr [8]byte
-		if _, err := io.ReadFull(f, recHdr[:]); err != nil {
-			return nil, fmt.Errorf("truncated record header: %w", err)
+	defer r.Close()
+	var out []any
+	for {
+		v, err := r.Next()
+		if err == io.EOF {
+			return out, nil
 		}
-		size := binary.BigEndian.Uint32(recHdr[0:4])
-		wantCRC := binary.BigEndian.Uint32(recHdr[4:8])
-		payload := make([]byte, size)
-		if _, err := io.ReadFull(f, payload); err != nil {
-			return nil, fmt.Errorf("truncated record payload: %w", err)
-		}
-		if crc32.ChecksumIEEE(payload) != wantCRC {
-			return nil, fmt.Errorf("checksum mismatch")
-		}
-		v, err := codec.Decode(payload)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, v)
 	}
-	return out, nil
 }

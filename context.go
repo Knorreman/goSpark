@@ -7,6 +7,7 @@ import (
 )
 
 type Context struct {
+	cleanups    []func()
 	execution   context.Context
 	conf        *Config
 	parallelism int
@@ -37,13 +38,13 @@ func NewContext(conf *Config) *Context {
 		}
 	}
 	ctx := &Context{
-		execution:      context.Background(),
-		conf:           conf,
-		parallelism:    parallelism,
-		shuffleManager: NewLocalShuffleManager(),
-		cache:          newMemoryCache(),
-		disk:           newDiskCache(),
+		execution:   context.Background(),
+		conf:        conf,
+		parallelism: parallelism,
+		cache:       newMemoryCache(),
+		disk:        newDiskCache(),
 	}
+	ctx.shuffleManager = newFileShuffleManager(ctx)
 	return ctx
 }
 
@@ -67,12 +68,24 @@ func (c *Context) DefaultParallelism() int { return c.parallelism }
 
 func (c *Context) Stop() {
 	c.closed.Store(true)
+	c.mu.Lock()
+	for _, close := range c.cleanups {
+		close()
+	}
+	c.cleanups = nil
+	c.mu.Unlock()
 	if c.cache != nil {
 		c.cache.clear()
 	}
 	if c.disk != nil {
 		c.disk.clear()
 	}
+}
+
+func (c *Context) onClose(fn func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cleanups = append(c.cleanups, fn)
 }
 
 func (c *Context) IsClosed() bool {

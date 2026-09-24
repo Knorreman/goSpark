@@ -120,14 +120,5 @@ func readShuffleReduceOutput[K comparable, C any](
 	reduceID int,
 	numMaps int,
 ) Iterator[Pair[K, C]] {
-	blocks := ctx.ShuffleManager().ReadReduceOutput(shuffleID, reduceID, numMaps)
-	var allPairs []Pair[K, C]
-	for _, block := range blocks {
-		for _, item := range block {
-			if pair, ok := item.(Pair[K, C]); ok {
-				allPairs = append(allPairs, pair)
-			}
-		}
-	}
-	return SliceIterator(allPairs)
+	return iteratorFromStream[Pair[K, C]](ctx, shuffleStream(ctx, shuffleID, reduceID, numMaps))
 }

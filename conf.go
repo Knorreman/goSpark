@@ -12,13 +12,16 @@ const (
 )
 
 type Config struct {
-	AppName        string
-	Master         string
-	NumPartitions  int
-	K8sNamespace   string
-	K8sImage       string
-	K8sServiceName string
-	S3             S3Config
+	ShuffleMemoryBytes int
+	MaxRecordBytes     int
+	MaxGroupBytes      int
+	AppName            string
+	Master             string
+	NumPartitions      int
+	K8sNamespace       string
+	K8sImage           string
+	K8sServiceName     string
+	S3                 S3Config
 }
 
 func DefaultConfig() *Config {

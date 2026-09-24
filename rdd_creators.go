@@ -2,6 +2,7 @@ package spark
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"strings"
 )
@@ -131,7 +132,7 @@ func newTextFileRDD(ctx *Context, path string, numPartitions int) *RDD[string] {
 		func() []Dependency { return nil },
 		func(partition Partition) Iterator[string] {
 			p := partition.(*textFilePartition)
-			return newTextFileIteratorFS(fs, p.path, p.offset, p.length)
+			return newTextFileIteratorFS(fs, p.path, p.offset, p.length, ctx)
 		},
 	)
 }
@@ -140,7 +141,7 @@ func newTextFileIterator(path string, offset, length int64) Iterator[string] {
 	return newTextFileIteratorFS(LocalFS{}, path, offset, length)
 }
 
-func newTextFileIteratorFS(fs FileSystem, path string, offset, length int64) Iterator[string] {
+func newTextFileIteratorFS(fs FileSystem, path string, offset, length int64, contexts ...*Context) Iterator[string] {
 	if length <= 0 {
 		return EmptyIterator[string]()
 	}
@@ -158,15 +159,29 @@ func newTextFileIteratorFS(fs FileSystem, path string, offset, length int64) Ite
 	if err != nil {
 		return func() (string, bool) { panic(err) }
 	}
+	limit := defaultRecordBytes
+	if len(contexts) > 0 {
+		limit = contexts[0].recordBytes()
+		contexts[0].onClose(func() { _ = file.Close() })
+	}
 	reader := bufio.NewReader(file)
 	pos := offset
 	end := offset + length
 	if skipFirst {
-		skipped, err := reader.ReadString('\n')
-		pos += int64(len(skipped))
-		if err != nil {
-			file.Close()
-			return EmptyIterator[string]()
+		for {
+			skipped, err := reader.ReadSlice('\n')
+			pos += int64(len(skipped))
+			if err == bufio.ErrBufferFull {
+				continue
+			}
+			if err != nil {
+				file.Close()
+				if err != io.EOF {
+					must(err)
+				}
+				return EmptyIterator[string]()
+			}
+			break
 		}
 	}
 	done := false
@@ -179,14 +194,32 @@ func newTextFileIteratorFS(fs FileSystem, path string, offset, length int64) Ite
 			done = true
 			return "", false
 		}
-		line, err := reader.ReadString('\n')
+		var data []byte
+		var err error
+		for {
+			var frag []byte
+			frag, err = reader.ReadSlice('\n')
+			if len(data)+len(frag) > limit {
+				file.Close()
+				must(fmt.Errorf("TextFile line exceeds MaxRecordBytes=%d", limit))
+			}
+			data = append(data, frag...)
+			if err != bufio.ErrBufferFull {
+				break
+			}
+		}
+		if err != nil && err != io.EOF {
+			file.Close()
+			must(err)
+		}
+		line := string(data)
 		if len(line) == 0 {
 			file.Close()
 			done = true
 			return "", false
 		}
 		pos += int64(len(line))
-		line = strings.TrimRight(line, "\r\n")
+		line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
 		if err != nil {
 			file.Close()
 			done = true

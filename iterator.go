@@ -1,5 +1,24 @@
 package spark
 
+func expandIterator[T, U any](input Iterator[T], fn func(T) Iterator[U]) Iterator[U] {
+	var current Iterator[U]
+	return func() (U, bool) {
+		for {
+			if current != nil {
+				if v, ok := current(); ok {
+					return v, true
+				}
+			}
+			v, ok := input()
+			if !ok {
+				var zero U
+				return zero, false
+			}
+			current = fn(v)
+		}
+	}
+}
+
 type Iterator[T any] func() (T, bool)
 
 func EmptyIterator[T any]() Iterator[T] {

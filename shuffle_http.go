@@ -74,12 +74,8 @@ func FetchShuffleBucketContext(ctx context.Context, baseURL string, m MapOutputM
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("fetch shuffle %s: %s %s", url, resp.Status, body)
-	}
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
 	}
 	tmp, err := os.CreateTemp("", "gospark-shuf-*")
 	if err != nil {
@@ -87,10 +83,12 @@ func FetchShuffleBucketContext(ctx context.Context, baseURL string, m MapOutputM
 	}
 	name := tmp.Name()
 	defer os.Remove(name)
-	if _, err := tmp.Write(data); err != nil {
+	if _, err := io.CopyBuffer(tmp, resp.Body, make([]byte, 32<<10)); err != nil {
 		tmp.Close()
 		return nil, err
 	}
-	tmp.Close()
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
 	return readBucketFile(name, codec)
 }

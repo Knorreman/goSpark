@@ -28,7 +28,7 @@ output partition skips sampling and sorts one bucket.
 
 Upstream installation downloads only the reducer buckets reached by the task's
 partition through narrow dependencies (including non-identity mappings) and
-uses bucket 0 for a single-bucket global shuffle such as SortByKey. Map
+uses bucket 0 for a single-bucket shuffle. Map
 manifests are still validated in full. Fetches use bounded buffers, validate
 frame/manifest checksums, and read records incrementally. Unmapped shuffles
 fall back to fetching all buckets; distributed cache reuse remains open.

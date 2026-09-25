@@ -270,9 +270,12 @@ Alternatively enable the SDK credential chain with
 For the environment-based switch, `AWS_EC2_METADATA_DISABLED=true` currently
 disables goSpark's default-chain opt-in; use the Go setting when you need both.
 
-`spark.TextFile(ctx, "s3://bucket/input.txt", 2)` reads a single object through
-the filesystem abstraction. Use it inside your registered job to process S3
-input; the bundled `k8s-wc` job uses a small built-in dataset.
+`spark.TextFile` reads one file or object, or every data file under a local
+directory or S3 prefix. A single file is split by byte ranges. Multiple files
+stay whole and are balanced across the requested partitions; names starting
+with `.` or `_` (including `_SUCCESS`) are skipped. Use it inside a registered
+job so every worker lists the same path. The bundled `k8s-wc` job uses a small
+built-in dataset.
 
 ### Save distributed results to S3
 
@@ -439,10 +442,9 @@ gaps are:
    backpressure. Tasks fetch only needed shuffle buckets, workers can enforce
    a shared shuffle disk budget, and drivers request job-scoped cleanup, but
    cached data and shuffle files still live on individual executors' local storage.
-4. **Scalable partitioned I/O and sorting:** Read directories and partitioned
-   datasets across workers, add common storage formats, and improve range
-   balancing for skewed sort keys. The current text reader handles a single
-   object; sorting now partitions work by sampled key ranges.
+4. **Scalable input formats:** Add formats beyond line-oriented text, split
+   large files inside multi-file datasets, and improve range balancing for
+   skewed sort keys. Directories and S3 prefixes can already be read as text.
 5. **RDD API and execution compatibility:** Fill gaps in transformations,
    actions, partitioner semantics, broadcast variables, and accumulators;
    define serialization and task-side-effect guarantees clearly. Cross-language

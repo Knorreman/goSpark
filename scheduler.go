@@ -92,6 +92,9 @@ func ScheduleContext(ctx context.Context, spec JobSpec, runners []TaskRunner, op
 	if err != nil {
 		return nil, err
 	}
+	if action, ok := getTreeAction(spec.Action); ok {
+		return mergeTreeResults(action, results)
+	}
 	var records []any
 	for _, r := range results {
 		records = append(records, r.Records...)

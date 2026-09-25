@@ -28,8 +28,11 @@ type RDD[T any] struct {
 	name            string
 	storageLevel    StorageLevel
 
-	mu          sync.Once
-	cachedParts []Partition
+	mu             sync.Once
+	cachedParts    []Partition
+	checkpointRun  sync.Mutex
+	checkpointMu   sync.RWMutex
+	checkpointPath string
 }
 
 func NewRDD[T any](
@@ -82,6 +85,11 @@ func (r *RDD[T]) Partitions() []Partition {
 }
 
 func (r *RDD[T]) Dependencies() []Dependency {
+	r.checkpointMu.RLock()
+	defer r.checkpointMu.RUnlock()
+	if r.checkpointPath != "" {
+		return nil
+	}
 	if r.dependenciesFn != nil {
 		return r.dependenciesFn()
 	}
@@ -95,6 +103,12 @@ func (r *RDD[T]) Compute(partition Partition) Iterator[T] {
 }
 
 func (r *RDD[T]) computePartition(partition Partition) Iterator[T] {
+	r.checkpointMu.RLock()
+	path := r.checkpointPath
+	r.checkpointMu.RUnlock()
+	if path != "" {
+		return checkpointIterator[T](r.ctx, path, partition.Index())
+	}
 	level := r.storageLevel
 	if level == StorageNone || r.ctx == nil {
 		return r.computeFn(partition)

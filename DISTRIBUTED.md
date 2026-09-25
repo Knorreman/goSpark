@@ -83,16 +83,37 @@ still requires the Docker-based CI run: newly created Job pods on the local
 podman cluster cannot reliably reach the pod network.
 
 For registered jobs, workers retain memory-cached RDD partitions whose lineage
-contains no shuffle across tasks of the same job. Successful task responses
-report touched and evicted (RDD ID, partition) locations; the driver prefers a
+contains no shuffle across tasks of the same job. To retain them across Schedule
+calls, opt in on the driver:
+
+```go
+cache := NewScheduleCache(workers)
+spec, err := cache.Persist("input-v1", JobSpec{TaskName: "my-job", Action: ActionCollect})
+// Handle err, then call Schedule(spec, workers) repeatedly.
+// When finished: cache.Unpersist(ctx, "input-v1") or cache.Stop(ctx).
+```
+
+Persist marks a registered job output (when it has narrow-only lineage) and
+any explicitly `Cache`d narrow-lineage inputs in that job graph. Reuse requires
+the same cache identity and plan fingerprint; change the identity when input
+data or callback behavior changes. Fingerprints do not hash input contents or
+Go function bodies. This is a **same worker process, pre-shuffle memory cache
+only**: it is not a distributed durable store, and shuffle-dependent and disk
+caches are not reusable. Worker loss or replacement recomputes its partitions.
+Job cleanup still removes shuffle data and job-scoped cache, but reusable data
+remains until explicit Unpersist or Stop (or the worker exits).
+
+Successful task responses report touched and evicted (RDD ID, partition)
+locations; the driver prefers a
 healthy worker holding a partition needed through narrow dependencies. Lost
 workers and replacements at the same DNS address are detected using a worker
 incarnation ID; their old locations are discarded, and missing cached
-partitions are recomputed from lineage. Cache data is released by job cleanup.
+partitions are recomputed from lineage. Job-scoped cache data is released by
+job cleanup.
 Disk-persisted caches remain task-local. Shuffle-dependent caches remain
 task-local until their versions can be invalidated when a shuffle map is
-repaired. Job IDs scope caches; identical application builds and deterministic
-factories remain required.
+repaired. Job IDs scope default caches; reusable caches use identity and plan
+fingerprint. Identical application builds and deterministic factories remain required.
 
 Independent partitions within a stage run in bounded waves (at most one task
 per configured runner); the driver accepts wave completions in partition order

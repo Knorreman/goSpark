@@ -203,6 +203,12 @@ func (r *RDD[T]) IsCached() bool {
 
 func (r *RDD[T]) cachedStorage() StorageLevel { return r.storageLevel }
 
+func (r *RDD[T]) persistOutput() {
+	if r.storageLevel == StorageNone {
+		r.storageLevel = StorageMemory
+	}
+}
+
 func (r *RDD[T]) SetName(name string) *RDD[T] {
 	r.name = name
 	return r

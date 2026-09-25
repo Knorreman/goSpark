@@ -71,6 +71,11 @@ func PlanJob(spec JobSpec) (*JobPlan, error) {
 	if rdd == nil {
 		return nil, fmt.Errorf("job %q returned nil RDD", spec.TaskName)
 	}
+	if spec.CacheIdentity != "" && cacheAcrossTasks(rdd) {
+		if output, ok := rdd.(interface{ persistOutput() }); ok {
+			output.persistOutput()
+		}
+	}
 	return PlanRDD(rdd, spec)
 }
 

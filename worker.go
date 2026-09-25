@@ -37,6 +37,7 @@ type execTaskResponse struct {
 }
 
 var jobIDPattern = regexp.MustCompile(`^job-[0-9a-f]{32}$`)
+var cacheIdentityPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 func validJobID(id string) bool { return jobIDPattern.MatchString(id) }
 
@@ -65,6 +66,9 @@ func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
 	var activeMu sync.Mutex
 	active := map[string]int{}
 	jobCaches := map[string]*memoryCache{}
+	type reusableKey struct{ name, fingerprint string }
+	reusable := map[reusableKey]*memoryCache{}
+	activeCache := map[string]int{}
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-GoSpark-Worker-ID", workerID)
 		w.WriteHeader(http.StatusOK)
@@ -84,18 +88,35 @@ func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if task.Job.CacheIdentity != "" && (!cacheIdentityPattern.MatchString(task.Job.CacheIdentity) || task.Fingerprint == "") {
+			http.Error(w, "invalid reusable cache identity or fingerprint", http.StatusBadRequest)
+			return
+		}
 		activeMu.Lock()
 		active[task.JobID]++
-		if validJobID(task.JobID) {
-			if jobCaches[task.JobID] == nil {
-				jobCaches[task.JobID] = newMemoryCache()
+		if task.Job.CacheIdentity != "" {
+			activeCache[task.Job.CacheIdentity]++
+			key := reusableKey{task.Job.CacheIdentity, task.Fingerprint}
+			if reusable[key] == nil {
+				reusable[key] = newMemoryCache()
 			}
-			task.jobCache = jobCaches[task.JobID]
+			task.jobCache = reusable[key]
+		}
+		if validJobID(task.JobID) {
+			if task.jobCache == nil {
+				if jobCaches[task.JobID] == nil {
+					jobCaches[task.JobID] = newMemoryCache()
+				}
+				task.jobCache = jobCaches[task.JobID]
+			}
 		}
 		activeMu.Unlock()
 		defer func() {
 			activeMu.Lock()
 			active[task.JobID]--
+			if task.Job.CacheIdentity != "" {
+				activeCache[task.Job.CacheIdentity]--
+			}
 			if active[task.JobID] == 0 {
 				delete(active, task.JobID)
 			}
@@ -151,6 +172,28 @@ func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(out)
+	})
+	mux.HandleFunc("/unpersist/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		name := strings.TrimPrefix(r.URL.Path, "/unpersist/")
+		if !cacheIdentityPattern.MatchString(name) {
+			http.Error(w, "invalid cache identity", http.StatusBadRequest)
+			return
+		}
+		activeMu.Lock()
+		defer activeMu.Unlock()
+		if activeCache[name] != 0 {
+			http.Error(w, "cache has active tasks", http.StatusConflict)
+			return
+		}
+		for key := range reusable {
+			if key.name == name {
+				delete(reusable, key)
+			}
+		}
 	})
 	mux.HandleFunc("/cleanup/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

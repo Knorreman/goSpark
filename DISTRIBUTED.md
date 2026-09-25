@@ -56,9 +56,12 @@ still requires the Docker-based CI run: newly created Job pods on the local
 podman cluster cannot reliably reach the pod network.
 
 Persisted cache locations are not tracked across workers; lost cache partitions
-are recomputed from lineage on future tasks. Execution remains sequential;
-fine-grained narrow-partition invalidation and scheduling many tasks in parallel
-remain future work.
+are recomputed from lineage on future tasks. Independent partitions within a
+stage run in bounded waves (at most one task per configured runner); the driver
+accepts wave completions in partition order and handles retries and shuffle
+repairs between waves. Stages still execute in dependency order. Fine-grained
+narrow-partition invalidation, locality-aware scheduling, and elastic executor
+discovery remain future work.
 
 ## Distributed output commits
 

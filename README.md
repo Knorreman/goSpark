@@ -405,8 +405,9 @@ per output partition; range-partitioned sorting is still future work.
 
 `ScheduleOpts` defaults to three task attempts and two lost-shuffle repairs.
 `WorkerClient.Timeout` defaults to two minutes; `HeartbeatInterval` defaults
-to one second. Scheduling is currently sequential across tasks, even when
-multiple executors are available.
+to one second. The driver schedules independent partitions in parallel within
+a stage, up to one in-flight task per configured worker; stages run in
+dependency order.
 
 For detailed execution, recovery, output, and memory semantics, see
 [`DISTRIBUTED.md`](DISTRIBUTED.md).
@@ -416,10 +417,10 @@ For detailed execution, recovery, output, and memory semantics, see
 For a more complete **distributed Spark RDD replacement**, the highest-impact
 gaps are:
 
-1. **Parallel, locality-aware scheduling:** Run independent partitions
-   concurrently across executors, place tasks near cached data and shuffle
-   blocks, and support executor discovery and elastic scaling. Today task
-   execution is sequential and the driver receives a fixed worker list.
+1. **Locality-aware and elastic scheduling:** Place tasks near cached data and
+   shuffle blocks, improve work distribution across concurrent jobs, and
+   support executor discovery and elastic scaling. Today the driver runs
+   partitions concurrently in bounded waves against a fixed worker list.
 2. **Durable driver recovery:** Persist job plans, accepted attempts, and
    shuffle/output metadata so a replacement driver can resume after a crash.
    Current recovery handles executor/shuffle loss while the driver remains alive.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -137,13 +138,23 @@ func scheduleResults(ctx context.Context, spec JobSpec, runners []TaskRunner, op
 	}
 	s := &lineageScheduler{ctx: ctx, spec: spec, plan: plan, runners: runners, opts: opts, jobID: fmt.Sprintf("job-%x", id), accepted: map[taskKey]ExecResult{}, attempts: map[taskKey]int{}}
 	result, _ := stageByID(plan, plan.ResultStageID)
-	// A repair invalidates affected descendants, including previously accepted
-	// result partitions. Revisit them before returning any records to the caller.
+	stages := orderedStages(plan)
+	// Only the coordinator mutates scheduler state. Independent tasks in a stage
+	// run concurrently, but their completions are accepted in partition order.
 	for {
-		for p := 0; p < result.NumPartitions; p++ {
-			if _, err = s.ensure(result, p); err != nil {
+		repaired := false
+		for _, stage := range stages {
+			before := s.repairs
+			if err = s.runStage(stage); err != nil {
 				return nil, "", 0, err
 			}
+			if s.repairs != before {
+				repaired = true
+				break
+			}
+		}
+		if repaired {
+			continue
 		}
 		var results []ExecResult
 		complete := true
@@ -161,6 +172,109 @@ func scheduleResults(ctx context.Context, spec JobSpec, runners []TaskRunner, op
 	}
 }
 
+type taskCompletion struct {
+	task  Task
+	stage Stage
+	res   ExecResult
+	err   error
+}
+
+// runStage dispatches at most one task per healthy runner in each wave. It
+// waits for the entire wave before mutating accepted results, so a lost shuffle
+// never races with another completion changing the scheduler's state.
+func (s *lineageScheduler) runStage(stage Stage) error {
+	for p := 0; p < stage.NumPartitions; {
+		beforeRepair := s.repairs
+		if err := s.ctx.Err(); err != nil {
+			return err
+		}
+		var wave []taskCompletion
+		var runners []TaskRunner
+		used := map[int]bool{}
+		for p < stage.NumPartitions && len(used) < len(s.runners) {
+			k := taskKey{stage.ID, p}
+			if _, ok := s.accepted[k]; ok {
+				p++
+				continue
+			}
+			index := s.pickWorkerIndex(used)
+			if index < 0 {
+				break
+			}
+			used[index] = true
+			runners = append(runners, s.runners[index])
+			var upstream []MapOutputManifest
+			for _, id := range stage.Parents {
+				parent, _ := stageByID(s.plan, id)
+				for part := 0; part < parent.NumPartitions; part++ {
+					upstream = append(upstream, *s.accepted[taskKey{id, part}].Manifest)
+				}
+			}
+			task := Task{JobID: s.jobID, Job: s.spec, StageID: stage.ID, PartitionID: p, Attempt: s.attempts[k], Upstream: upstream, Fingerprint: s.plan.Fingerprint}
+			s.attempts[k]++
+			wave = append(wave, taskCompletion{task: task, stage: stage})
+			p++
+		}
+		if len(wave) == 0 && p == stage.NumPartitions {
+			break
+		}
+		if len(wave) == 0 {
+			return fmt.Errorf("no healthy workers")
+		}
+		var wg sync.WaitGroup
+		for i := range wave {
+			wg.Add(1)
+			completion := &wave[i]
+			runner := runners[i]
+			go func() {
+				defer wg.Done()
+				if r, ok := runner.(ContextTaskRunner); ok {
+					completion.res, completion.err = r.ExecContext(s.ctx, completion.task)
+				} else {
+					completion.res, completion.err = runner.Exec(completion.task)
+				}
+			}()
+		}
+		wg.Wait()
+		if err := s.ctx.Err(); err != nil {
+			return err
+		}
+		for _, done := range wave {
+			err := done.err
+			if err == nil {
+				err = validateTaskResult(done.task, stage, done.res)
+			}
+			if err != nil {
+				var fetch *FetchError
+				if errors.As(err, &fetch) {
+					return s.invalidate(fetch, stage)
+				}
+				// The first failed dispatch counts toward the attempt budget.
+				if s.opts.MaxAttempts == 1 {
+					return fmt.Errorf("stage %d partition %d retries exhausted: %w", stage.ID, done.task.PartitionID, err)
+				}
+				if _, err = s.ensureRetry(stage, done.task.PartitionID, 1); err != nil {
+					return err
+				}
+				if s.repairs != beforeRepair {
+					return nil
+				}
+				continue
+			}
+			s.accepted[taskKey{stage.ID, done.task.PartitionID}] = done.res
+			if s.opts.OnTaskComplete != nil {
+				if err := s.opts.OnTaskComplete(done.task, done.res); err != nil {
+					return err
+				}
+			}
+		}
+		if s.repairs != beforeRepair {
+			return nil
+		}
+	}
+	return nil
+}
+
 type taskKey struct{ stage, part int }
 type lineageScheduler struct {
 	ctx             context.Context
@@ -175,11 +289,14 @@ type lineageScheduler struct {
 }
 
 func (s *lineageScheduler) ensure(stage Stage, partition int) (ExecResult, error) {
+	return s.ensureRetry(stage, partition, 0)
+}
+
+func (s *lineageScheduler) ensureRetry(stage Stage, partition, failures int) (ExecResult, error) {
 	k := taskKey{stage.ID, partition}
 	if r, ok := s.accepted[k]; ok {
 		return r, nil
 	}
-	failures := 0
 	for {
 		if err := s.ctx.Err(); err != nil {
 			return ExecResult{}, err
@@ -264,9 +381,21 @@ func validateTaskResult(task Task, stage Stage, res ExecResult) error {
 }
 
 func (s *lineageScheduler) pickWorker() TaskRunner {
+	i := s.pickWorkerIndex(nil)
+	if i < 0 {
+		return nil
+	}
+	return s.runners[i]
+}
+
+func (s *lineageScheduler) pickWorkerIndex(used map[int]bool) int {
 	for i := 0; i < len(s.runners); i++ {
-		r := s.runners[s.worker%len(s.runners)]
+		index := s.worker % len(s.runners)
 		s.worker++
+		if used[index] {
+			continue
+		}
+		r := s.runners[index]
 		if h, ok := r.(interface{ AliveContext(context.Context) bool }); ok {
 			if !h.AliveContext(s.ctx) {
 				continue
@@ -274,9 +403,9 @@ func (s *lineageScheduler) pickWorker() TaskRunner {
 		} else if h, ok := r.(interface{ Alive() bool }); ok && !h.Alive() {
 			continue
 		}
-		return r
+		return index
 	}
-	return nil
+	return -1
 }
 
 func (s *lineageScheduler) invalidate(e *FetchError, consumer Stage) error {

@@ -13,6 +13,7 @@ import (
 type FSFileInfo struct {
 	Name string
 	Size int64
+	Dir  bool
 }
 
 type ObjectStore interface {
@@ -224,7 +225,7 @@ func (LocalFS) Stat(filePath string) (FSFileInfo, error) {
 	if err != nil {
 		return FSFileInfo{}, err
 	}
-	return FSFileInfo{Name: fi.Name(), Size: fi.Size()}, nil
+	return FSFileInfo{Name: fi.Name(), Size: fi.Size(), Dir: fi.IsDir()}, nil
 }
 
 func (LocalFS) List(dirPath string) ([]FSFileInfo, error) {

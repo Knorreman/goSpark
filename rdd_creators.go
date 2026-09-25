@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"path"
+	"sort"
 	"strings"
 )
 
@@ -75,11 +77,15 @@ func newParallelCollectionRDD[T any](ctx *Context, data []T, numPartitions int) 
 	)
 }
 
-type textFilePartition struct {
-	index  int
+type textSpan struct {
 	path   string
 	offset int64
 	length int64
+}
+
+type textFilePartition struct {
+	index int
+	files []textSpan
 }
 
 func (p *textFilePartition) Index() int { return p.index }
@@ -95,46 +101,129 @@ func newTextFileRDD(ctx *Context, path string, numPartitions int) *RDD[string] {
 	return NewRDD[string](
 		ctx,
 		func() []Partition {
-			info, err := fs.Stat(filePath)
-			if err != nil {
-				return []Partition{&textFilePartition{index: 0, path: filePath, offset: 0, length: 0}}
-			}
-			fileSize := info.Size
-			if fileSize == 0 {
-				return []Partition{&textFilePartition{index: 0, path: filePath, offset: 0, length: 0}}
-			}
-			actualParts := numPartitions
-			if actualParts <= 0 {
-				actualParts = 1
-			}
-			partitions := make([]Partition, actualParts)
-			chunkSize := fileSize / int64(actualParts)
-			if chunkSize == 0 {
-				chunkSize = fileSize
-				partitions = partitions[:1]
-				actualParts = 1
-			}
-			for i := 0; i < actualParts; i++ {
-				offset := int64(i) * chunkSize
-				length := chunkSize
-				if i == actualParts-1 {
-					length = fileSize - offset
-				}
-				partitions[i] = &textFilePartition{
-					index:  i,
-					path:   filePath,
-					offset: offset,
-					length: length,
-				}
-			}
-			return partitions
+			return textInputPartitions(fs, filePath, numPartitions)
 		},
 		func() []Dependency { return nil },
 		func(partition Partition) Iterator[string] {
 			p := partition.(*textFilePartition)
-			return newTextFileIteratorFS(fs, p.path, p.offset, p.length, ctx)
+			var iters []Iterator[string]
+			for _, file := range p.files {
+				iters = append(iters, newTextFileIteratorFS(fs, file.path, file.offset, file.length, ctx))
+			}
+			return ChainIterators(iters)
 		},
 	)
+}
+
+func textInputPartitions(fs FileSystem, filePath string, numPartitions int) []Partition {
+	info, statErr := fs.Stat(filePath)
+	if statErr == nil && !info.Dir {
+		return splitTextFile(filePath, info.Size, numPartitions)
+	}
+	files, err := collectTextFiles(fs, filePath)
+	if err != nil || len(files) == 0 {
+		return []Partition{&textFilePartition{index: 0}}
+	}
+	if len(files) == 1 {
+		return splitTextFile(files[0].path, files[0].length, numPartitions)
+	}
+	if numPartitions <= 0 {
+		numPartitions = 1
+	}
+	if numPartitions > len(files) {
+		numPartitions = len(files)
+	}
+	groups := make([][]textSpan, numPartitions)
+	used := make([]int64, numPartitions)
+	for _, file := range files {
+		slot := 0
+		for i := 1; i < numPartitions; i++ {
+			if used[i] < used[slot] {
+				slot = i
+			}
+		}
+		groups[slot] = append(groups[slot], file)
+		used[slot] += file.length
+	}
+	parts := make([]Partition, 0, numPartitions)
+	for _, group := range groups {
+		if len(group) == 0 {
+			continue
+		}
+		parts = append(parts, &textFilePartition{index: len(parts), files: group})
+	}
+	return parts
+}
+
+func splitTextFile(filePath string, fileSize int64, numPartitions int) []Partition {
+	if fileSize <= 0 {
+		return []Partition{&textFilePartition{index: 0, files: []textSpan{{path: filePath}}}}
+	}
+	if numPartitions <= 0 {
+		numPartitions = 1
+	}
+	chunkSize := fileSize / int64(numPartitions)
+	if chunkSize == 0 {
+		chunkSize = fileSize
+		numPartitions = 1
+	}
+	parts := make([]Partition, numPartitions)
+	for i := 0; i < numPartitions; i++ {
+		offset := int64(i) * chunkSize
+		length := chunkSize
+		if i == numPartitions-1 {
+			length = fileSize - offset
+		}
+		parts[i] = &textFilePartition{index: i, files: []textSpan{{path: filePath, offset: offset, length: length}}}
+	}
+	return parts
+}
+
+func collectTextFiles(fs FileSystem, root string) ([]textSpan, error) {
+	listPath := root
+	if fs.Scheme() != "file" && listPath != "" && !strings.HasSuffix(listPath, "/") {
+		listPath += "/"
+	}
+	entries, err := fs.List(listPath)
+	if err != nil {
+		return nil, err
+	}
+	var out []textSpan
+	for _, entry := range entries {
+		name := entry.Name
+		if fs.Scheme() == "file" {
+			name = fs.Join(root, entry.Name)
+		}
+		base := path.Base(strings.TrimSuffix(name, "/"))
+		if base == "." || base == ".." || strings.HasPrefix(base, ".") || strings.HasPrefix(base, "_") {
+			continue
+		}
+		if fs.Scheme() == "file" {
+			info, err := fs.Stat(name)
+			if err != nil {
+				return nil, err
+			}
+			if info.Dir {
+				nested, err := collectTextFiles(fs, name)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, nested...)
+				continue
+			}
+			out = append(out, textSpan{path: name, length: info.Size})
+			continue
+		}
+		if strings.HasSuffix(name, "/") {
+			continue
+		}
+		if !strings.HasPrefix(name, listPath) {
+			continue
+		}
+		out = append(out, textSpan{path: name, length: entry.Size})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
+	return out, nil
 }
 
 func newTextFileIterator(path string, offset, length int64) Iterator[string] {

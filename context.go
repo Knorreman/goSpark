@@ -14,12 +14,16 @@ type Context struct {
 	closed      atomic.Bool
 	mu          sync.Mutex
 
-	shuffleManager ShuffleManager
-	cache          *memoryCache
-	disk           *diskCache
-	shuffleBudget  *diskBudget
-	rddIDs         atomic.Int64
-	shuffleIDs     atomic.Int64
+	shuffleManager   ShuffleManager
+	cache            *memoryCache
+	distributedCache *memoryCache
+	disk             *diskCache
+	shuffleBudget    *diskBudget
+	rddIDs           atomic.Int64
+	shuffleIDs       atomic.Int64
+	cacheChangesMu   sync.Mutex
+	cacheTouched     map[CachePartition]bool
+	cacheDropped     map[CachePartition]bool
 }
 
 func NewContext(conf *Config) *Context {
@@ -50,6 +54,38 @@ func NewContext(conf *Config) *Context {
 }
 
 func (c *Context) Config() *Config { return c.conf }
+
+func (c *Context) noteCachePresent(key CachePartition) {
+	c.cacheChangesMu.Lock()
+	defer c.cacheChangesMu.Unlock()
+	if c.cacheTouched == nil {
+		c.cacheTouched = map[CachePartition]bool{}
+	}
+	c.cacheTouched[key] = true
+	delete(c.cacheDropped, key)
+}
+
+func (c *Context) noteCacheRemoved(key CachePartition) {
+	c.cacheChangesMu.Lock()
+	defer c.cacheChangesMu.Unlock()
+	if c.cacheDropped == nil {
+		c.cacheDropped = map[CachePartition]bool{}
+	}
+	c.cacheDropped[key] = true
+	delete(c.cacheTouched, key)
+}
+
+func (c *Context) cacheUpdates() (cached, dropped []CachePartition) {
+	c.cacheChangesMu.Lock()
+	defer c.cacheChangesMu.Unlock()
+	for key := range c.cacheTouched {
+		cached = append(cached, key)
+	}
+	for key := range c.cacheDropped {
+		dropped = append(dropped, key)
+	}
+	return
+}
 
 // TaskContext is canceled when the driver's task RPC is canceled or times out.
 // User callbacks performing blocking I/O should pass it to that I/O operation.

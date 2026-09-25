@@ -150,7 +150,7 @@ func scheduleResults(ctx context.Context, spec JobSpec, runners []TaskRunner, op
 	if _, err = rand.Read(id[:]); err != nil {
 		return nil, "", 0, err
 	}
-	s := &lineageScheduler{ctx: ctx, spec: spec, plan: plan, runners: runners, opts: opts, jobID: fmt.Sprintf("job-%x", id), accepted: map[taskKey]ExecResult{}, attempts: map[taskKey]int{}}
+	s := &lineageScheduler{ctx: ctx, spec: spec, plan: plan, runners: runners, opts: opts, jobID: fmt.Sprintf("job-%x", id), accepted: map[taskKey]ExecResult{}, attempts: map[taskKey]int{}, cacheLocations: map[CachePartition]map[int]bool{}}
 	defer cleanupJob(runners, s.jobID)
 	result, _ := stageByID(plan, plan.ResultStageID)
 	stages := orderedStages(plan)
@@ -208,10 +208,11 @@ func cleanupJob(runners []TaskRunner, jobID string) {
 }
 
 type taskCompletion struct {
-	task  Task
-	stage Stage
-	res   ExecResult
-	err   error
+	task   Task
+	stage  Stage
+	worker int
+	res    ExecResult
+	err    error
 }
 
 // runStage dispatches at most one task per healthy runner in each wave. It
@@ -232,7 +233,7 @@ func (s *lineageScheduler) runStage(stage Stage) error {
 				p++
 				continue
 			}
-			index := s.pickWorkerIndex(used)
+			index := s.pickWorkerIndexFor(used, stageCacheHints(stage, p))
 			if index < 0 {
 				break
 			}
@@ -247,7 +248,7 @@ func (s *lineageScheduler) runStage(stage Stage) error {
 			}
 			task := Task{JobID: s.jobID, Job: s.spec, StageID: stage.ID, PartitionID: p, Attempt: s.attempts[k], Upstream: upstream, Fingerprint: s.plan.Fingerprint}
 			s.attempts[k]++
-			wave = append(wave, taskCompletion{task: task, stage: stage})
+			wave = append(wave, taskCompletion{task: task, stage: stage, worker: index})
 			p++
 		}
 		if len(wave) == 0 && p == stage.NumPartitions {
@@ -297,6 +298,7 @@ func (s *lineageScheduler) runStage(stage Stage) error {
 				continue
 			}
 			s.accepted[taskKey{stage.ID, done.task.PartitionID}] = done.res
+			s.rememberWorkerCache(done.worker, done.res.Cached, done.res.Dropped)
 			if s.opts.OnTaskComplete != nil {
 				if err := s.opts.OnTaskComplete(done.task, done.res); err != nil {
 					return err
@@ -321,6 +323,8 @@ type lineageScheduler struct {
 	worker, repairs int
 	accepted        map[taskKey]ExecResult
 	attempts        map[taskKey]int
+	cacheLocations  map[CachePartition]map[int]bool
+	workerIDs       map[int]string
 }
 
 func (s *lineageScheduler) ensure(stage Stage, partition int) (ExecResult, error) {
@@ -356,12 +360,13 @@ func (s *lineageScheduler) ensureRetry(stage Stage, partition, failures int) (Ex
 		} // Rebuild a consistent parent snapshot.
 		task := Task{JobID: s.jobID, Job: s.spec, StageID: stage.ID, PartitionID: partition, Attempt: s.attempts[k], Upstream: upstream, Fingerprint: s.plan.Fingerprint}
 		s.attempts[k]++ // Never reuse paths, including after selective recomputation.
-		runner := s.pickWorker()
+		index := s.pickWorkerIndexFor(nil, stageCacheHints(stage, partition))
 		var res ExecResult
 		var err error
-		if runner == nil {
+		if index < 0 {
 			return res, fmt.Errorf("no healthy workers")
 		}
+		runner := s.runners[index]
 		if r, ok := runner.(ContextTaskRunner); ok {
 			res, err = r.ExecContext(s.ctx, task)
 		} else {
@@ -375,6 +380,7 @@ func (s *lineageScheduler) ensureRetry(stage Stage, partition, failures int) (Ex
 		}
 		if err == nil {
 			s.accepted[k] = res
+			s.rememberWorkerCache(index, res.Cached, res.Dropped)
 			if s.opts.OnTaskComplete != nil {
 				if err = s.opts.OnTaskComplete(task, res); err != nil {
 					return ExecResult{}, err
@@ -415,32 +421,78 @@ func validateTaskResult(task Task, stage Stage, res ExecResult) error {
 	return nil
 }
 
-func (s *lineageScheduler) pickWorker() TaskRunner {
-	i := s.pickWorkerIndex(nil)
-	if i < 0 {
-		return nil
+func stageCacheHints(stage Stage, partition int) []CachePartition {
+	if partition >= 0 && partition < len(stage.CacheHints) {
+		return stage.CacheHints[partition]
 	}
-	return s.runners[i]
+	return nil
 }
 
-func (s *lineageScheduler) pickWorkerIndex(used map[int]bool) int {
+func (s *lineageScheduler) dropWorkerCache(worker int) {
+	for key, workers := range s.cacheLocations {
+		delete(workers, worker)
+		if len(workers) == 0 {
+			delete(s.cacheLocations, key)
+		}
+	}
+}
+
+func (s *lineageScheduler) rememberWorkerCache(worker int, cached, dropped []CachePartition) {
+	for _, key := range dropped {
+		delete(s.cacheLocations[key], worker)
+		if len(s.cacheLocations[key]) == 0 {
+			delete(s.cacheLocations, key)
+		}
+	}
+	for _, key := range cached {
+		if s.cacheLocations[key] == nil {
+			s.cacheLocations[key] = map[int]bool{}
+		}
+		s.cacheLocations[key][worker] = true
+	}
+}
+
+func (s *lineageScheduler) pickWorkerIndexFor(used map[int]bool, hints []CachePartition) int {
+	best, bestScore := -1, 0
 	for i := 0; i < len(s.runners); i++ {
-		index := s.worker % len(s.runners)
-		s.worker++
+		index := (s.worker + i) % len(s.runners)
 		if used[index] {
 			continue
 		}
 		r := s.runners[index]
 		if h, ok := r.(interface{ AliveContext(context.Context) bool }); ok {
 			if !h.AliveContext(s.ctx) {
+				s.dropWorkerCache(index)
 				continue
 			}
 		} else if h, ok := r.(interface{ Alive() bool }); ok && !h.Alive() {
+			s.dropWorkerCache(index)
 			continue
 		}
-		return index
+		if identity, ok := r.(interface{ WorkerID() string }); ok {
+			id := identity.WorkerID()
+			if previous := s.workerIDs[index]; previous != "" && id != previous {
+				s.dropWorkerCache(index)
+			}
+			if s.workerIDs == nil {
+				s.workerIDs = map[int]string{}
+			}
+			s.workerIDs[index] = id
+		}
+		score := 0
+		for _, key := range hints {
+			if s.cacheLocations[key][index] {
+				score++
+			}
+		}
+		if best == -1 || score > bestScore {
+			best, bestScore = index, score
+		}
 	}
-	return -1
+	if best >= 0 {
+		s.worker = (best + 1) % len(s.runners)
+	}
+	return best
 }
 
 func (s *lineageScheduler) invalidate(e *FetchError, consumer Stage) error {

@@ -100,6 +100,13 @@ func (r *RDD[T]) computePartition(partition Partition) Iterator[T] {
 		return r.computeFn(partition)
 	}
 	idx := partition.Index()
+	shared := r.ctx.distributedCache != nil && cacheAcrossTasks(r)
+	if (level == StorageMemory || level == StorageMemoryAndDisk) && shared {
+		if cached, ok := r.ctx.distributedCache.get(r.id, idx); ok {
+			r.ctx.noteCachePresent(CachePartition{RDDID: r.id, PartitionID: idx})
+			return cachedIterator[T](cached)
+		}
+	}
 	if (level == StorageMemory || level == StorageMemoryAndDisk) && r.ctx.cache != nil {
 		if cached, ok := r.ctx.cache.get(r.id, idx); ok {
 			return cachedIterator[T](cached)
@@ -120,6 +127,10 @@ func (r *RDD[T]) computePartition(partition Partition) Iterator[T] {
 	}
 	if (level == StorageMemory || level == StorageMemoryAndDisk) && r.ctx.cache != nil {
 		r.ctx.cache.put(r.id, idx, anyData)
+	}
+	if (level == StorageMemory || level == StorageMemoryAndDisk) && shared {
+		r.ctx.distributedCache.put(r.id, idx, anyData)
+		r.ctx.noteCachePresent(CachePartition{RDDID: r.id, PartitionID: idx})
 	}
 	if (level == StorageDisk || level == StorageMemoryAndDisk) && r.ctx.disk != nil {
 		r.ctx.disk.put(r.id, idx, anyData)
@@ -152,6 +163,9 @@ func (r *RDD[T]) IsCached() bool {
 	for _, p := range r.Partitions() {
 		idx := p.Index()
 		mem := r.ctx.cache != nil && r.ctx.cache.has(r.id, idx)
+		if r.ctx.distributedCache != nil && cacheAcrossTasks(r) {
+			mem = mem || r.ctx.distributedCache.has(r.id, idx)
+		}
 		disk := r.ctx.disk != nil && r.ctx.disk.has(r.id, idx)
 		switch r.storageLevel {
 		case StorageMemory:
@@ -172,6 +186,8 @@ func (r *RDD[T]) IsCached() bool {
 	}
 	return true
 }
+
+func (r *RDD[T]) cachedStorage() StorageLevel { return r.storageLevel }
 
 func (r *RDD[T]) SetName(name string) *RDD[T] {
 	r.name = name

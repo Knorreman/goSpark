@@ -9,6 +9,7 @@ import (
 
 type Task struct {
 	budget      *diskBudget
+	jobCache    *memoryCache
 	JobID       string
 	Job         JobSpec
 	StageID     int
@@ -25,6 +26,8 @@ type ExecResult struct {
 	Manifest    *MapOutputManifest
 	Records     []any
 	Output      *PartitionOutput
+	Cached      []CachePartition
+	Dropped     []CachePartition
 }
 
 func ExecuteTask(task Task) (ExecResult, error) {
@@ -86,6 +89,7 @@ func ExecuteTaskContext(execution context.Context, task Task) (result ExecResult
 		NumPartitions: task.Job.NumPartitions,
 	})
 	defer ctx.Stop()
+	ctx.distributedCache = task.jobCache
 	if task.budget != nil {
 		ctx.disk.clear()
 		path, err := os.MkdirTemp(task.StoreDir, "scratch-")
@@ -155,23 +159,28 @@ func ExecuteTaskContext(execution context.Context, task Task) (result ExecResult
 		if err != nil {
 			return ExecResult{}, err
 		}
-		return ExecResult{PartitionID: task.PartitionID, Kind: StageShuffleMap, Manifest: &man}, nil
+		return withCacheUpdates(ctx, ExecResult{PartitionID: task.PartitionID, Kind: StageShuffleMap, Manifest: &man}), nil
 	case StageResult:
 		if task.Job.Action == ActionSave {
 			out, err := writeOutputPartition(execution, rdd, *stage, task)
 			if err != nil {
 				return ExecResult{}, err
 			}
-			return ExecResult{PartitionID: task.PartitionID, Kind: StageResult, Output: &out}, nil
+			return withCacheUpdates(ctx, ExecResult{PartitionID: task.PartitionID, Kind: StageResult, Output: &out}), nil
 		}
 		recs, err := executeResult(ctx, rdd, *stage, task, store)
 		if err != nil {
 			return ExecResult{}, err
 		}
-		return ExecResult{PartitionID: task.PartitionID, Kind: StageResult, Records: recs}, nil
+		return withCacheUpdates(ctx, ExecResult{PartitionID: task.PartitionID, Kind: StageResult, Records: recs}), nil
 	default:
 		return ExecResult{}, fmt.Errorf("unknown stage kind %q", stage.Kind)
 	}
+}
+
+func withCacheUpdates(ctx *Context, res ExecResult) ExecResult {
+	res.Cached, res.Dropped = ctx.cacheUpdates()
+	return res
 }
 
 func executeShuffleMap(_ *Context, root RDDAny, stage Stage, task Task, jobID string, store *DiskShuffleStore) (MapOutputManifest, error) {

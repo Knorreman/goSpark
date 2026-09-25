@@ -3,6 +3,7 @@ package spark
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/gob"
 	"encoding/json"
 	"errors"
@@ -27,6 +28,8 @@ type execTaskResponse struct {
 	Manifest    *MapOutputManifest `json:"manifest,omitempty"`
 	Output      *PartitionOutput   `json:"output,omitempty"`
 	RecordBlob  []byte             `json:"record_blob,omitempty"`
+	Cached      []CachePartition   `json:"cached,omitempty"`
+	Dropped     []CachePartition   `json:"dropped,omitempty"`
 	Error       string             `json:"error,omitempty"`
 	FetchError  *FetchError        `json:"fetch_error,omitempty"`
 }
@@ -44,6 +47,12 @@ func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	var incarnation [16]byte
+	if _, err := rand.Read(incarnation[:]); err != nil {
+		ln.Close()
+		return nil, "", err
+	}
+	workerID := fmt.Sprintf("%x", incarnation)
 	baseURL := os.Getenv("GOSPARK_ADVERTISE_URL")
 	if baseURL == "" {
 		host := ln.Addr().String()
@@ -53,7 +62,9 @@ func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
 	mux := http.NewServeMux()
 	var activeMu sync.Mutex
 	active := map[string]int{}
+	jobCaches := map[string]*memoryCache{}
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-GoSpark-Worker-ID", workerID)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
@@ -73,6 +84,12 @@ func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
 		}
 		activeMu.Lock()
 		active[task.JobID]++
+		if validJobID(task.JobID) {
+			if jobCaches[task.JobID] == nil {
+				jobCaches[task.JobID] = newMemoryCache()
+			}
+			task.jobCache = jobCaches[task.JobID]
+		}
 		activeMu.Unlock()
 		defer func() {
 			activeMu.Lock()
@@ -106,6 +123,8 @@ func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
 		}
 		out.Kind = res.Kind
 		out.Output = res.Output
+		out.Cached = res.Cached
+		out.Dropped = res.Dropped
 		if res.Manifest != nil {
 			man := *res.Manifest
 			man.BaseURL = baseURL
@@ -140,7 +159,9 @@ func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
 		}
 		if err := budget.removeDir(NewDiskShuffleStore(storeDir).jobDir(jobID)); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
+		delete(jobCaches, jobID)
 	})
 	mux.HandleFunc("/shuffle/", func(w http.ResponseWriter, r *http.Request) {
 		rel := strings.TrimPrefix(r.URL.Path, "/shuffle/")
@@ -186,6 +207,14 @@ type WorkerClient struct {
 	// Timeout bounds each RPC, including shuffle fetch and computation on the worker.
 	Timeout           time.Duration
 	HeartbeatInterval time.Duration
+	mu                sync.Mutex
+	workerID          string
+}
+
+func (c *WorkerClient) WorkerID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.workerID
 }
 
 func (c *WorkerClient) CleanupJobContext(ctx context.Context, jobID string) error {
@@ -234,7 +263,13 @@ func (c *WorkerClient) AliveContext(ctx context.Context) bool {
 		return false
 	}
 	resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	c.mu.Lock()
+	c.workerID = resp.Header.Get("X-GoSpark-Worker-ID")
+	c.mu.Unlock()
+	return true
 }
 
 func (r localRunner) Alive() bool { return true }
@@ -315,7 +350,7 @@ func (c *WorkerClient) ExecContext(parent context.Context, task Task) (ExecResul
 	if resp.StatusCode != http.StatusOK {
 		return ExecResult{}, fmt.Errorf("worker returned HTTP %d", resp.StatusCode)
 	}
-	res := ExecResult{PartitionID: out.PartitionID, Kind: out.Kind, Manifest: out.Manifest, Output: out.Output}
+	res := ExecResult{PartitionID: out.PartitionID, Kind: out.Kind, Manifest: out.Manifest, Output: out.Output, Cached: out.Cached, Dropped: out.Dropped}
 	if len(out.RecordBlob) > 0 {
 		recs, err := decodeRecordSlice(out.RecordBlob)
 		if err != nil {

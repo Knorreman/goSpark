@@ -57,13 +57,23 @@ with the schedule process running on executor 0. The separate driver Job path
 still requires the Docker-based CI run: newly created Job pods on the local
 podman cluster cannot reliably reach the pod network.
 
-Persisted cache locations are not tracked across workers; lost cache partitions
-are recomputed from lineage on future tasks. Independent partitions within a
-stage run in bounded waves (at most one task per configured runner); the driver
-accepts wave completions in partition order and handles retries and shuffle
-repairs between waves. Stages still execute in dependency order. Fine-grained
-narrow-partition invalidation, locality-aware scheduling, and elastic executor
-discovery remain future work.
+For registered jobs, workers retain memory-cached RDD partitions whose lineage
+contains no shuffle across tasks of the same job. Successful task responses
+report touched and evicted (RDD ID, partition) locations; the driver prefers a
+healthy worker holding a partition needed through narrow dependencies. Lost
+workers and replacements at the same DNS address are detected using a worker
+incarnation ID; their old locations are discarded, and missing cached
+partitions are recomputed from lineage. Cache data is released by job cleanup.
+Disk-persisted caches remain task-local. Shuffle-dependent caches remain
+task-local until their versions can be invalidated when a shuffle map is
+repaired. Job IDs scope caches; identical application builds and deterministic
+factories remain required.
+
+Independent partitions within a stage run in bounded waves (at most one task
+per configured runner); the driver accepts wave completions in partition order
+and handles retries and shuffle repairs between waves. Stages still execute in
+dependency order. Fine-grained narrow-partition invalidation and elastic
+executor discovery remain future work.
 
 ## Distributed output commits
 

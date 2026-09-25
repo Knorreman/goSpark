@@ -15,6 +15,9 @@ DataFrames, streaming, and MLlib are outside the current scope.
 ## What you can do
 
 - Transform typed data with `Map`, `FlatMap`, `Filter`, and `MapPartitions`.
+- Use `RandomSplit(rdd, weights, seed)` for reproducible, disjoint weighted splits;
+  `Pipe(rdd, command)` runs a shell command per partition, sending records as
+  stdin lines and returning stdout lines (the command must be available on workers).
 - Aggregate, join, group, repartition, and sort keyed data.
 - Execute compiled jobs through a Kubernetes driver Job and executor StatefulSet.
 - Recover lost shuffle output and cancel stalled worker requests.

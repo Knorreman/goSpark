@@ -1,5 +1,10 @@
 package spark
 
+import (
+	"math"
+	"math/rand"
+)
+
 func Map[T any, U any](rdd *RDD[T], fn func(T) U) *RDD[U] {
 	return NewRDD[U](
 		rdd.ctx,
@@ -297,6 +302,49 @@ func Sample[T any](rdd *RDD[T], withReplacement bool, fraction float64, seed ...
 			return localRng.Float64() < fraction
 		})
 	})
+}
+
+// RandomSplit assigns every input occurrence to exactly one split. Weights must
+// be finite and non-negative, with at least one positive weight.
+func RandomSplit[T any](rdd *RDD[T], weights []float64, seed int64) []*RDD[T] {
+	if len(weights) == 0 {
+		panic("RandomSplit requires at least one weight")
+	}
+	total := 0.0
+	for _, weight := range weights {
+		if weight < 0 || math.IsNaN(weight) || math.IsInf(weight, 0) {
+			panic("RandomSplit weights must be finite and non-negative")
+		}
+		total += weight
+	}
+	if total == 0 || math.IsInf(total, 0) {
+		panic("RandomSplit requires a finite, positive total weight")
+	}
+	// Normalizing before adding avoids cumulative overflow for large weights.
+	boundaries := make([]float64, len(weights))
+	var cumulative float64
+	for i, weight := range weights {
+		cumulative += weight / total
+		boundaries[i] = cumulative
+	}
+	boundaries[len(boundaries)-1] = 1
+
+	splits := make([]*RDD[T], len(weights))
+	for i := range splits {
+		split := i
+		splits[i] = MapPartitionsWithIndex(rdd, func(idx int, iter Iterator[T]) Iterator[T] {
+			rng := rand.New(rand.NewSource(seed + int64(idx)))
+			return FilterIterator(iter, func(_ T) bool {
+				value := rng.Float64()
+				bucket := 0
+				for bucket < len(boundaries)-1 && value >= boundaries[bucket] {
+					bucket++
+				}
+				return bucket == split
+			})
+		})
+	}
+	return splits
 }
 
 func Zip[T any, U any](rdd1 *RDD[T], rdd2 *RDD[U]) *RDD[Pair[T, U]] {

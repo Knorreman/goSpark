@@ -28,6 +28,7 @@ type execTaskResponse struct {
 	Manifest    *MapOutputManifest `json:"manifest,omitempty"`
 	Output      *PartitionOutput   `json:"output,omitempty"`
 	RecordBlob  []byte             `json:"record_blob,omitempty"`
+	SampleBlob  []byte             `json:"sample_blob,omitempty"`
 	Cached      []CachePartition   `json:"cached,omitempty"`
 	Dropped     []CachePartition   `json:"dropped,omitempty"`
 	Error       string             `json:"error,omitempty"`
@@ -137,6 +138,14 @@ func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
 				return
 			}
 			out.RecordBlob = blob
+		}
+		if len(res.Samples) > 0 {
+			blob, err := encodeRecordSlice(res.Samples)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			out.SampleBlob = blob
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(out)
@@ -357,6 +366,13 @@ func (c *WorkerClient) ExecContext(parent context.Context, task Task) (ExecResul
 			return ExecResult{}, err
 		}
 		res.Records = recs
+	}
+	if len(out.SampleBlob) > 0 {
+		samples, err := decodeRecordSlice(out.SampleBlob)
+		if err != nil {
+			return ExecResult{}, err
+		}
+		res.Samples = samples
 	}
 	return res, nil
 }

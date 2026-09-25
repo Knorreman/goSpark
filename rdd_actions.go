@@ -204,6 +204,16 @@ func computeShuffleStages(rddAny RDDAny) {
 				continue
 			}
 			partitions := parent.Partitions()
+			if shuffleDep.sortLess != nil && shuffleDep.partitioner.NumPartitions() > 1 {
+				var samples []any
+				var seen uint64
+				for _, p := range partitions {
+					part, err := sampleSortPartition(parent.Ctx(), shuffleDep, p)
+					must(err)
+					samples = appendSortSamples(samples, part, &seen)
+				}
+				shuffleDep.partitioner.(*RangePartitioner).SetRangeBounds(selectRangeBounds(samples, shuffleDep.partitioner.NumPartitions(), shuffleDep.sortLess))
+			}
 			shuffleID := shuffleDep.shuffleID
 			ctx := parent.Ctx()
 			ctx.ShuffleManager().RegisterShuffle(shuffleID)

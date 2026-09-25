@@ -402,8 +402,9 @@ Set these on `Config`, or on `ctx.Config()` in your job factory:
 These are encoded-data budgets, not total RSS limits. Allow runtime and
 callback headroom. `GroupByKey` materializes one `[]V` group and rejects
 oversized groups. `Collect`, explicit caching, and user-created slices still
-materialize data. `SortByKey` uses external sorting but repeats global sorting
-per output partition; range-partitioned sorting is still future work.
+materialize data. `SortByKey` samples keys, range-partitions the shuffle, and
+externally sorts each output partition. Sampling reads the input twice and
+skewed keys can still make a bucket much larger than others.
 
 During a registered distributed job, `Cache` / memory persistence can reuse
 partitions across tasks on the same worker when their lineage contains no
@@ -438,10 +439,10 @@ gaps are:
    backpressure. Tasks fetch only needed shuffle buckets, workers can enforce
    a shared shuffle disk budget, and drivers request job-scoped cleanup, but
    cached data and shuffle files still live on individual executors' local storage.
-4. **Scalable partitioned I/O and sorting:** Split large input files across
-   workers, support partitioned datasets and common storage formats, and use
-   range partitioning for `SortByKey`. The current text reader handles a single
-   object, while sorting repeats global work for each output partition.
+4. **Scalable partitioned I/O and sorting:** Read directories and partitioned
+   datasets across workers, add common storage formats, and improve range
+   balancing for skewed sort keys. The current text reader handles a single
+   object; sorting now partitions work by sampled key ranges.
 5. **RDD API and execution compatibility:** Fill gaps in transformations,
    actions, partitioner semantics, broadcast variables, and accumulators;
    define serialization and task-side-effect guarantees clearly. Cross-language

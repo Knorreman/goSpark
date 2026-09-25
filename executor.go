@@ -18,6 +18,8 @@ type Task struct {
 	StoreDir    string
 	Upstream    []MapOutputManifest
 	Fingerprint string
+	Sample      bool
+	RangeBounds []byte
 }
 
 type ExecResult struct {
@@ -28,6 +30,7 @@ type ExecResult struct {
 	Output      *PartitionOutput
 	Cached      []CachePartition
 	Dropped     []CachePartition
+	Samples     []any
 }
 
 func ExecuteTask(task Task) (ExecResult, error) {
@@ -153,8 +156,37 @@ func ExecuteTaskContext(execution context.Context, task Task) (result ExecResult
 	if err := installUpstream(ctx, *stage, task, store, requiredShuffleBuckets(stageRoot, task.PartitionID)); err != nil {
 		return ExecResult{}, err
 	}
+	if task.Sample {
+		if stage.Kind != StageShuffleMap {
+			return ExecResult{}, fmt.Errorf("sampling requires a shuffle-map stage")
+		}
+		dep := findShuffleDep(rdd, stage.ShuffleID)
+		if dep == nil || dep.sortLess == nil {
+			return ExecResult{}, fmt.Errorf("stage %d is not a range sort", stage.ID)
+		}
+		part, ok := partitionByIndex(dep.Parent(), task.PartitionID)
+		if !ok {
+			return ExecResult{}, fmt.Errorf("sampling partition %d not found", task.PartitionID)
+		}
+		samples, err := sampleSortPartition(ctx, dep, part)
+		if err != nil {
+			return ExecResult{}, err
+		}
+		return withCacheUpdates(ctx, ExecResult{PartitionID: task.PartitionID, Kind: StageSample, Samples: samples}), nil
+	}
 	switch stage.Kind {
 	case StageShuffleMap:
+		dep := findShuffleDep(rdd, stage.ShuffleID)
+		if dep != nil && dep.sortLess != nil && dep.partitioner.NumPartitions() > 1 {
+			if len(task.RangeBounds) == 0 {
+				return ExecResult{}, fmt.Errorf("range sort task missing sampled boundaries")
+			}
+			bounds, err := decodeRecordSlice(task.RangeBounds)
+			if err != nil {
+				return ExecResult{}, err
+			}
+			dep.partitioner.(*RangePartitioner).SetRangeBounds(bounds)
+		}
 		man, err := executeShuffleMap(ctx, rdd, *stage, task, jobID, store)
 		if err != nil {
 			return ExecResult{}, err

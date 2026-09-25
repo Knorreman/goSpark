@@ -150,7 +150,7 @@ func scheduleResults(ctx context.Context, spec JobSpec, runners []TaskRunner, op
 	if _, err = rand.Read(id[:]); err != nil {
 		return nil, "", 0, err
 	}
-	s := &lineageScheduler{ctx: ctx, spec: spec, plan: plan, runners: runners, opts: opts, jobID: fmt.Sprintf("job-%x", id), accepted: map[taskKey]ExecResult{}, attempts: map[taskKey]int{}, cacheLocations: map[CachePartition]map[int]bool{}}
+	s := &lineageScheduler{ctx: ctx, spec: spec, plan: plan, runners: runners, opts: opts, jobID: fmt.Sprintf("job-%x", id), accepted: map[taskKey]ExecResult{}, attempts: map[taskKey]int{}, cacheLocations: map[CachePartition]map[int]bool{}, sampled: map[int]bool{}, bounds: map[int][]byte{}}
 	defer cleanupJob(runners, s.jobID)
 	result, _ := stageByID(plan, plan.ResultStageID)
 	stages := orderedStages(plan)
@@ -160,6 +160,15 @@ func scheduleResults(ctx context.Context, spec JobSpec, runners []TaskRunner, op
 		repaired := false
 		for _, stage := range stages {
 			before := s.repairs
+			if stage.RangeSort && !s.sampled[stage.ID] {
+				if err = s.sampleStage(stage); err != nil {
+					return nil, "", 0, err
+				}
+				if s.repairs != before {
+					repaired = true
+					break
+				}
+			}
 			if err = s.runStage(stage); err != nil {
 				return nil, "", 0, err
 			}
@@ -215,6 +224,109 @@ type taskCompletion struct {
 	err    error
 }
 
+// sampleStage reads a bounded reservoir from each map input partition before
+// any range-map attempt is dispatched. A repair discards the entire sample
+// snapshot and the outer scheduler revisits its dependencies.
+func (s *lineageScheduler) sampleStage(stage Stage) error {
+	var samples []any
+	var seen uint64
+	for p := 0; p < stage.NumPartitions; {
+		if err := s.ctx.Err(); err != nil {
+			return err
+		}
+		var wave []taskCompletion
+		used := map[int]bool{}
+		for p < stage.NumPartitions && len(used) < len(s.runners) {
+			index := s.pickWorkerIndexFor(used, stageCacheHints(stage, p))
+			if index < 0 {
+				break
+			}
+			used[index] = true
+			wave = append(wave, taskCompletion{task: s.sampleTask(stage, p, 0), stage: stage, worker: index})
+			p++
+		}
+		if len(wave) == 0 {
+			return fmt.Errorf("no healthy workers")
+		}
+		var wg sync.WaitGroup
+		for i := range wave {
+			wg.Add(1)
+			done := &wave[i]
+			runner := s.runners[done.worker]
+			go func() {
+				defer wg.Done()
+				if r, ok := runner.(ContextTaskRunner); ok {
+					done.res, done.err = r.ExecContext(s.ctx, done.task)
+				} else {
+					done.res, done.err = runner.Exec(done.task)
+				}
+			}()
+		}
+		wg.Wait()
+		if err := s.ctx.Err(); err != nil {
+			return err
+		}
+		for _, done := range wave {
+			res, err := done.res, done.err
+			if err == nil && (res.Kind != StageSample || res.PartitionID != done.task.PartitionID) {
+				err = fmt.Errorf("mismatched sample result")
+			}
+			if err != nil {
+				var fetch *FetchError
+				if errors.As(err, &fetch) {
+					return s.invalidate(fetch, stage)
+				}
+				for attempt := 1; attempt < s.opts.MaxAttempts; attempt++ {
+					index := s.pickWorkerIndexFor(nil, stageCacheHints(stage, done.task.PartitionID))
+					if index < 0 {
+						return fmt.Errorf("no healthy workers")
+					}
+					task := s.sampleTask(stage, done.task.PartitionID, attempt)
+					if runner, ok := s.runners[index].(ContextTaskRunner); ok {
+						res, err = runner.ExecContext(s.ctx, task)
+					} else {
+						res, err = s.runners[index].Exec(task)
+					}
+					if err == nil && (res.Kind != StageSample || res.PartitionID != task.PartitionID) {
+						err = fmt.Errorf("mismatched sample result")
+					}
+					if err == nil {
+						done.worker = index
+						break
+					}
+					if errors.As(err, &fetch) {
+						return s.invalidate(fetch, stage)
+					}
+				}
+				if err != nil {
+					return fmt.Errorf("stage %d sample partition %d retries exhausted: %w", stage.ID, done.task.PartitionID, err)
+				}
+			}
+			samples = appendSortSamples(samples, res.Samples, &seen)
+			s.rememberWorkerCache(done.worker, res.Cached, res.Dropped)
+		}
+	}
+	boundaries := selectRangeBounds(samples, stage.NumReducers, s.plan.sortLess[stage.ID])
+	blob, err := encodeRecordSlice(boundaries)
+	if err != nil {
+		return err
+	}
+	s.bounds[stage.ID] = blob
+	s.sampled[stage.ID] = true
+	return nil
+}
+
+func (s *lineageScheduler) sampleTask(stage Stage, partition, attempt int) Task {
+	var upstream []MapOutputManifest
+	for _, id := range stage.Parents {
+		parent, _ := stageByID(s.plan, id)
+		for p := 0; p < parent.NumPartitions; p++ {
+			upstream = append(upstream, *s.accepted[taskKey{id, p}].Manifest)
+		}
+	}
+	return Task{JobID: s.jobID, Job: s.spec, StageID: stage.ID, PartitionID: partition, Attempt: attempt, Sample: true, Upstream: upstream, Fingerprint: s.plan.Fingerprint}
+}
+
 // runStage dispatches at most one task per healthy runner in each wave. It
 // waits for the entire wave before mutating accepted results, so a lost shuffle
 // never races with another completion changing the scheduler's state.
@@ -246,7 +358,7 @@ func (s *lineageScheduler) runStage(stage Stage) error {
 					upstream = append(upstream, *s.accepted[taskKey{id, part}].Manifest)
 				}
 			}
-			task := Task{JobID: s.jobID, Job: s.spec, StageID: stage.ID, PartitionID: p, Attempt: s.attempts[k], Upstream: upstream, Fingerprint: s.plan.Fingerprint}
+			task := Task{JobID: s.jobID, Job: s.spec, StageID: stage.ID, PartitionID: p, Attempt: s.attempts[k], Upstream: upstream, Fingerprint: s.plan.Fingerprint, RangeBounds: s.bounds[stage.ID]}
 			s.attempts[k]++
 			wave = append(wave, taskCompletion{task: task, stage: stage, worker: index})
 			p++
@@ -325,6 +437,8 @@ type lineageScheduler struct {
 	attempts        map[taskKey]int
 	cacheLocations  map[CachePartition]map[int]bool
 	workerIDs       map[int]string
+	sampled         map[int]bool
+	bounds          map[int][]byte
 }
 
 func (s *lineageScheduler) ensure(stage Stage, partition int) (ExecResult, error) {
@@ -358,7 +472,7 @@ func (s *lineageScheduler) ensureRetry(stage Stage, partition, failures int) (Ex
 		if s.repairs != beforeRepair {
 			continue
 		} // Rebuild a consistent parent snapshot.
-		task := Task{JobID: s.jobID, Job: s.spec, StageID: stage.ID, PartitionID: partition, Attempt: s.attempts[k], Upstream: upstream, Fingerprint: s.plan.Fingerprint}
+		task := Task{JobID: s.jobID, Job: s.spec, StageID: stage.ID, PartitionID: partition, Attempt: s.attempts[k], Upstream: upstream, Fingerprint: s.plan.Fingerprint, RangeBounds: s.bounds[stage.ID]}
 		s.attempts[k]++ // Never reuse paths, including after selective recomputation.
 		index := s.pickWorkerIndexFor(nil, stageCacheHints(stage, partition))
 		var res ExecResult
@@ -538,6 +652,8 @@ func (s *lineageScheduler) invalidate(e *FetchError, consumer Stage) error {
 				for p := 0; p < st.NumPartitions; p++ {
 					delete(s.accepted, taskKey{st.ID, p})
 				}
+				delete(s.sampled, st.ID)
+				delete(s.bounds, st.ID)
 				break
 			}
 		}

@@ -21,6 +21,13 @@ type cacheKey struct {
 	part  int
 }
 
+// CachePartition identifies a materialized memory-cached RDD partition within
+// a single job. RDD IDs are deterministic only for the same compiled job graph.
+type CachePartition struct {
+	RDDID       int `json:"rdd_id"`
+	PartitionID int `json:"partition_id"`
+}
+
 type memoryCache struct {
 	mu   sync.RWMutex
 	data map[cacheKey][]any
@@ -66,6 +73,18 @@ func (c *memoryCache) clear() {
 	c.data = make(map[cacheKey][]any)
 }
 
+func (c *memoryCache) keysForRDD(rddID int) []CachePartition {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var out []CachePartition
+	for k := range c.data {
+		if k.rddID == rddID {
+			out = append(out, CachePartition{RDDID: k.rddID, PartitionID: k.part})
+		}
+	}
+	return out
+}
+
 func Cache[T any](rdd *RDD[T]) *RDD[T] {
 	return Persist(rdd, StorageMemory)
 }
@@ -79,6 +98,12 @@ func Unpersist[T any](rdd *RDD[T]) *RDD[T] {
 	rdd.storageLevel = StorageNone
 	if rdd.ctx != nil && rdd.ctx.cache != nil {
 		rdd.ctx.cache.removeRDD(rdd.id)
+	}
+	if rdd.ctx != nil && rdd.ctx.distributedCache != nil {
+		for _, key := range rdd.ctx.distributedCache.keysForRDD(rdd.id) {
+			rdd.ctx.noteCacheRemoved(key)
+		}
+		rdd.ctx.distributedCache.removeRDD(rdd.id)
 	}
 	if rdd.ctx != nil && rdd.ctx.disk != nil {
 		rdd.ctx.disk.removeRDD(rdd.id)

@@ -405,6 +405,12 @@ oversized groups. `Collect`, explicit caching, and user-created slices still
 materialize data. `SortByKey` uses external sorting but repeats global sorting
 per output partition; range-partitioned sorting is still future work.
 
+During a registered distributed job, `Cache` / memory persistence can reuse
+partitions across tasks on the same worker when their lineage contains no
+shuffle. The driver prefers workers holding those partitions and drops lost
+locations. Disk persistence and caches computed after a shuffle remain
+task-local; worker memory caches are released at job cleanup.
+
 `ScheduleOpts` defaults to three task attempts and two lost-shuffle repairs.
 `WorkerClient.Timeout` defaults to two minutes; `HeartbeatInterval` defaults
 to one second. The driver schedules independent partitions in parallel within
@@ -426,9 +432,9 @@ gaps are:
 2. **Durable driver recovery:** Persist job plans, accepted attempts, and
    shuffle/output metadata so a replacement driver can resume after a crash.
    Current recovery handles executor/shuffle loss while the driver remains alive.
-3. **Distributed cache and shuffle lifecycle:** Track cached partition locations,
-   reuse them across tasks, recompute only missing partitions, and manage shuffle
-   retention, orphan cleanup after driver crashes, and disk-pressure
+3. **Distributed cache and shuffle lifecycle:** Extend location tracking to disk
+   caches and shuffle-dependent partitions (including version invalidation on
+   repair), and add orphan cleanup after driver crashes and disk-pressure
    backpressure. Tasks fetch only needed shuffle buckets, workers can enforce
    a shared shuffle disk budget, and drivers request job-scoped cleanup, but
    cached data and shuffle files still live on individual executors' local storage.

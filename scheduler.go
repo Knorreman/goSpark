@@ -127,6 +127,9 @@ func ScheduleSaveContext(ctx context.Context, spec JobSpec, runners []TaskRunner
 }
 
 func scheduleResults(ctx context.Context, spec JobSpec, runners []TaskRunner, opts ScheduleOpts) ([]ExecResult, string, int, error) {
+	if len(spec.Accumulators) > 0 && spec.accumulatorContext == nil {
+		return nil, "", 0, fmt.Errorf("distributed accumulators require BindAccumulators")
+	}
 	if len(runners) == 0 {
 		return nil, "", 0, fmt.Errorf("no workers")
 	}
@@ -191,6 +194,9 @@ func scheduleResults(ctx context.Context, spec JobSpec, runners []TaskRunner, op
 			results = append(results, r)
 		}
 		if complete {
+			if err := mergeAccumulators(spec, s.accepted); err != nil {
+				return nil, "", 0, err
+			}
 			return results, s.jobID, result.ID, nil
 		}
 	}

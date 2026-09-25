@@ -17,6 +17,15 @@ Named broadcasts travel in the job spec as gob bytes, up to 8 MiB combined.
 Their hashes are part of the plan fingerprint. Read them in the factory; do
 not treat them as shuffled data.
 
+Create `NewInt64Accumulator(ctx, "items")` or
+`NewFloat64Accumulator(ctx, "weight")` on the driver, then call
+`BindAccumulators(&spec, ctx)` before `Schedule`. Registered job factories
+recreate handles by the same names on workers; task callbacks call `Add`, and
+only driver handles can call `Value`. Local `Collect` updates handles directly.
+Distributed contributions are returned with task results and merged from the
+final accepted attempts, so lost responses, retries, and shuffle repairs do
+not double-count. Sampling callbacks may be replayed and are not counted.
+
 SortByKey is lazy and executable by remote tasks. For multiple output
 partitions, workers first sample up to 64 keys per input partition (up to 4 KiB
 encoded per key); the driver caps the combined sample at 4,096 keys and

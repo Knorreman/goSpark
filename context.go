@@ -24,6 +24,7 @@ type Context struct {
 	cacheChangesMu   sync.Mutex
 	cacheTouched     map[CachePartition]bool
 	cacheDropped     map[CachePartition]bool
+	accumulators     accumulatorSet
 }
 
 func NewContext(conf *Config) *Context {

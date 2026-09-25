@@ -1,5 +1,11 @@
 package spark
 
+import (
+	"fmt"
+	"math"
+	"math/rand"
+)
+
 func Map[T any, U any](rdd *RDD[T], fn func(T) U) *RDD[U] {
 	return NewRDD[U](
 		rdd.ctx,
@@ -299,6 +305,49 @@ func Sample[T any](rdd *RDD[T], withReplacement bool, fraction float64, seed ...
 	})
 }
 
+// RandomSplit assigns every input occurrence to exactly one split. Weights must
+// be finite and non-negative, with at least one positive weight.
+func RandomSplit[T any](rdd *RDD[T], weights []float64, seed int64) []*RDD[T] {
+	if len(weights) == 0 {
+		panic("RandomSplit requires at least one weight")
+	}
+	total := 0.0
+	for _, weight := range weights {
+		if weight < 0 || math.IsNaN(weight) || math.IsInf(weight, 0) {
+			panic("RandomSplit weights must be finite and non-negative")
+		}
+		total += weight
+	}
+	if total == 0 || math.IsInf(total, 0) {
+		panic("RandomSplit requires a finite, positive total weight")
+	}
+	// Normalizing before adding avoids cumulative overflow for large weights.
+	boundaries := make([]float64, len(weights))
+	var cumulative float64
+	for i, weight := range weights {
+		cumulative += weight / total
+		boundaries[i] = cumulative
+	}
+	boundaries[len(boundaries)-1] = 1
+
+	splits := make([]*RDD[T], len(weights))
+	for i := range splits {
+		split := i
+		splits[i] = MapPartitionsWithIndex(rdd, func(idx int, iter Iterator[T]) Iterator[T] {
+			rng := rand.New(rand.NewSource(seed + int64(idx)))
+			return FilterIterator(iter, func(_ T) bool {
+				value := rng.Float64()
+				bucket := 0
+				for bucket < len(boundaries)-1 && value >= boundaries[bucket] {
+					bucket++
+				}
+				return bucket == split
+			})
+		})
+	}
+	return splits
+}
+
 func Zip[T any, U any](rdd1 *RDD[T], rdd2 *RDD[U]) *RDD[Pair[T, U]] {
 	if len(rdd1.Partitions()) != len(rdd2.Partitions()) {
 		panic("Can only zip RDDs with same number of partitions")
@@ -325,6 +374,87 @@ func Zip[T any, U any](rdd1 *RDD[T], rdd2 *RDD[U]) *RDD[Pair[T, U]] {
 				}
 				return NewPair(v1, v2), true
 			}
+		},
+	)
+}
+
+// ZipWithIndex numbers records in partition order, starting at zero. Prefix
+// partitions are read to determine each partition's starting index; the input
+// must produce the same records on repeated reads for indexes to remain stable.
+func ZipWithIndex[T any](rdd *RDD[T]) *RDD[Pair[T, int64]] {
+	parts := rdd.Partitions()
+	return NewRDD[Pair[T, int64]](rdd.ctx,
+		rdd.Partitions,
+		func() []Dependency {
+			return []Dependency{NewNarrowDep(rdd, func(pid int) []int {
+				parents := make([]int, pid+1)
+				for i := range parents {
+					parents[i] = parts[i].Index()
+				}
+				return parents
+			})}
+		},
+		func(partition Partition) Iterator[Pair[T, int64]] {
+			var offset int64
+			for _, prior := range parts {
+				if prior.Index() == partition.Index() {
+					break
+				}
+				offset += CountIterator(rdd.Compute(prior))
+			}
+			iter := rdd.Compute(partition)
+			return func() (Pair[T, int64], bool) {
+				value, ok := iter()
+				if !ok {
+					return Pair[T, int64]{}, false
+				}
+				result := NewPair(value, offset)
+				offset++
+				return result, true
+			}
+		},
+	)
+}
+
+// ZipPartitions applies fn to the corresponding iterators of N RDDs. All
+// inputs must have the same number of partitions and share a context.
+func ZipPartitions[T any, U any](rdds []*RDD[T], fn func([]Iterator[T]) Iterator[U]) *RDD[U] {
+	if len(rdds) == 0 {
+		panic("ZipPartitions requires at least one RDD")
+	}
+	if rdds[0] == nil {
+		panic("ZipPartitions: RDD 0 is nil")
+	}
+	count := len(rdds[0].Partitions())
+	for i, rdd := range rdds {
+		if rdd == nil {
+			panic(fmt.Sprintf("ZipPartitions: RDD %d is nil", i))
+		}
+		if rdd.ctx != rdds[0].ctx {
+			panic(fmt.Sprintf("ZipPartitions: RDD %d has a different context", i))
+		}
+		if got := len(rdd.Partitions()); got != count {
+			panic(fmt.Sprintf("ZipPartitions: RDD %d has %d partitions, want %d", i, got, count))
+		}
+	}
+	return NewRDD[U](rdds[0].ctx,
+		func() []Partition { return NewPartitions(count) },
+		func() []Dependency {
+			deps := make([]Dependency, len(rdds))
+			for i, rdd := range rdds {
+				parent := rdd
+				deps[i] = NewNarrowDep(parent, func(pid int) []int {
+					return []int{parent.Partitions()[pid].Index()}
+				})
+			}
+			return deps
+		},
+		func(partition Partition) Iterator[U] {
+			iters := make([]Iterator[T], len(rdds))
+			for i, rdd := range rdds {
+				iters[i] = rdd.Compute(rdd.Partitions()[partition.Index()])
+			}
+			return fn(iters)
 		},
 	)
 }

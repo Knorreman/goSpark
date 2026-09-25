@@ -92,6 +92,9 @@ func ScheduleContext(ctx context.Context, spec JobSpec, runners []TaskRunner, op
 	if err != nil {
 		return nil, err
 	}
+	if action, ok := getTreeAction(spec.Action); ok {
+		return mergeTreeResults(action, results)
+	}
 	var records []any
 	for _, r := range results {
 		records = append(records, r.Records...)
@@ -129,6 +132,9 @@ func ScheduleSaveContext(ctx context.Context, spec JobSpec, runners []TaskRunner
 func scheduleResults(ctx context.Context, spec JobSpec, runners []TaskRunner, opts ScheduleOpts) ([]ExecResult, string, int, error) {
 	if spec.CacheIdentity != "" && !cacheIdentityPattern.MatchString(spec.CacheIdentity) {
 		return nil, "", 0, fmt.Errorf("invalid reusable cache identity %q", spec.CacheIdentity)
+	}
+	if len(spec.Accumulators) > 0 && spec.accumulatorContext == nil {
+		return nil, "", 0, fmt.Errorf("distributed accumulators require BindAccumulators")
 	}
 	if len(runners) == 0 {
 		return nil, "", 0, fmt.Errorf("no workers")
@@ -197,6 +203,9 @@ func scheduleResults(ctx context.Context, spec JobSpec, runners []TaskRunner, op
 			results = append(results, r)
 		}
 		if complete {
+			if err := mergeAccumulators(spec, s.accepted); err != nil {
+				return nil, "", 0, err
+			}
 			return results, s.jobID, result.ID, nil
 		}
 	}

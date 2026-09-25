@@ -20,19 +20,20 @@ import (
 )
 
 type execTaskResponse struct {
-	JobID       string             `json:"job_id"`
-	StageID     int                `json:"stage_id"`
-	Attempt     int                `json:"attempt"`
-	PartitionID int                `json:"partition_id"`
-	Kind        StageKind          `json:"kind"`
-	Manifest    *MapOutputManifest `json:"manifest,omitempty"`
-	Output      *PartitionOutput   `json:"output,omitempty"`
-	RecordBlob  []byte             `json:"record_blob,omitempty"`
-	SampleBlob  []byte             `json:"sample_blob,omitempty"`
-	Cached      []CachePartition   `json:"cached,omitempty"`
-	Dropped     []CachePartition   `json:"dropped,omitempty"`
-	Error       string             `json:"error,omitempty"`
-	FetchError  *FetchError        `json:"fetch_error,omitempty"`
+	JobID        string                      `json:"job_id"`
+	StageID      int                         `json:"stage_id"`
+	Attempt      int                         `json:"attempt"`
+	PartitionID  int                         `json:"partition_id"`
+	Kind         StageKind                   `json:"kind"`
+	Manifest     *MapOutputManifest          `json:"manifest,omitempty"`
+	Output       *PartitionOutput            `json:"output,omitempty"`
+	RecordBlob   []byte                      `json:"record_blob,omitempty"`
+	SampleBlob   []byte                      `json:"sample_blob,omitempty"`
+	Cached       []CachePartition            `json:"cached,omitempty"`
+	Dropped      []CachePartition            `json:"dropped,omitempty"`
+	Accumulators map[string]accumulatorValue `json:"accumulators,omitempty"`
+	Error        string                      `json:"error,omitempty"`
+	FetchError   *FetchError                 `json:"fetch_error,omitempty"`
 }
 
 var jobIDPattern = regexp.MustCompile(`^job-[0-9a-f]{32}$`)
@@ -147,6 +148,7 @@ func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
 		out.Output = res.Output
 		out.Cached = res.Cached
 		out.Dropped = res.Dropped
+		out.Accumulators = res.Accumulators
 		if res.Manifest != nil {
 			man := *res.Manifest
 			man.BaseURL = baseURL
@@ -402,7 +404,7 @@ func (c *WorkerClient) ExecContext(parent context.Context, task Task) (ExecResul
 	if resp.StatusCode != http.StatusOK {
 		return ExecResult{}, fmt.Errorf("worker returned HTTP %d", resp.StatusCode)
 	}
-	res := ExecResult{PartitionID: out.PartitionID, Kind: out.Kind, Manifest: out.Manifest, Output: out.Output, Cached: out.Cached, Dropped: out.Dropped}
+	res := ExecResult{PartitionID: out.PartitionID, Kind: out.Kind, Manifest: out.Manifest, Output: out.Output, Cached: out.Cached, Dropped: out.Dropped, Accumulators: out.Accumulators}
 	if len(out.RecordBlob) > 0 {
 		recs, err := decodeRecordSlice(out.RecordBlob)
 		if err != nil {

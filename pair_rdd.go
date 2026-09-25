@@ -1,5 +1,34 @@
 package spark
 
+import "fmt"
+
+// Lookup returns values for key. A partitioned RDD reads only the key's
+// partition; an unpartitioned RDD scans all partitions.
+func Lookup[K comparable, V any](rdd *RDD[Pair[K, V]], key K) []V {
+	computeShuffleStages(rdd)
+	parts := rdd.Partitions()
+	if len(parts) == 0 {
+		return nil
+	}
+	if p := rdd.GetPartitioner(); p != nil {
+		idx := p.GetPartition(key)
+		if idx < 0 || idx >= len(parts) {
+			panic(fmt.Sprintf("Lookup: partition %d outside %d partitions", idx, len(parts)))
+		}
+		parts = parts[idx : idx+1]
+	}
+	var values []V
+	for _, part := range parts {
+		iter := rdd.Compute(part)
+		for pair, ok := iter(); ok; pair, ok = iter() {
+			if pair.Key == key {
+				values = append(values, pair.Value)
+			}
+		}
+	}
+	return values
+}
+
 func ReduceByKey[K comparable, V any](rdd *RDD[Pair[K, V]], partitioner Partitioner, fn func(V, V) V) *RDD[Pair[K, V]] {
 	return NewReduceByKeyRDD(rdd, partitioner, fn)
 }
@@ -119,6 +148,16 @@ func RightOuterJoin[K comparable, V any, W any](rdd1 *RDD[Pair[K, V]], rdd2 *RDD
 	return NewRightOuterJoinRDD(rdd1, rdd2, partitioner)
 }
 
+// FullOuterJoin emits every matching pair and every unmatched value, with nil on the absent side.
+func FullOuterJoin[K comparable, V any, W any](rdd1 *RDD[Pair[K, V]], rdd2 *RDD[Pair[K, W]], partitioner Partitioner) *RDD[Pair[K, Pair[*V, *W]]] {
+	return NewFullOuterJoinRDD(rdd1, rdd2, partitioner)
+}
+
+// SubtractByKey keeps all left records whose key is absent from the right RDD.
+func SubtractByKey[K comparable, V any, W any](rdd1 *RDD[Pair[K, V]], rdd2 *RDD[Pair[K, W]], partitioner Partitioner) *RDD[Pair[K, V]] {
+	return NewSubtractByKeyRDD(rdd1, rdd2, partitioner)
+}
+
 func NewJoinRDD[K comparable, V any, W any](rdd1 *RDD[Pair[K, V]], rdd2 *RDD[Pair[K, W]], partitioner Partitioner) *RDD[Pair[K, Pair[V, W]]] {
 	cogrouped := Cogroup(rdd1, rdd2, partitioner)
 	return MapPartitions(cogrouped, func(groups Iterator[Pair[K, Pair[[]V, []W]]]) Iterator[Pair[K, Pair[V, W]]] {
@@ -173,6 +212,56 @@ func NewRightOuterJoinRDD[K comparable, V any, W any](rdd1 *RDD[Pair[K, V]], rdd
 	return Map(left, func(p Pair[K, Pair[W, *V]]) Pair[K, Pair[*V, W]] {
 		return NewPair(p.Key, NewPair(p.Value.Value, p.Value.Key))
 	})
+}
+
+func NewFullOuterJoinRDD[K comparable, V any, W any](rdd1 *RDD[Pair[K, V]], rdd2 *RDD[Pair[K, W]], partitioner Partitioner) *RDD[Pair[K, Pair[*V, *W]]] {
+	cogrouped := Cogroup(rdd1, rdd2, partitioner)
+	return MapPartitions(cogrouped, func(groups Iterator[Pair[K, Pair[[]V, []W]]]) Iterator[Pair[K, Pair[*V, *W]]] {
+		return expandIterator(groups, func(p Pair[K, Pair[[]V, []W]]) Iterator[Pair[K, Pair[*V, *W]]] {
+			i, j := 0, 0
+			return func() (Pair[K, Pair[*V, *W]], bool) {
+				if len(p.Value.Key) == 0 {
+					if j >= len(p.Value.Value) {
+						return Pair[K, Pair[*V, *W]]{}, false
+					}
+					w := p.Value.Value[j]
+					j++
+					return NewPair(p.Key, NewPair((*V)(nil), &w)), true
+				}
+				if i >= len(p.Value.Key) {
+					return Pair[K, Pair[*V, *W]]{}, false
+				}
+				v := p.Value.Key[i]
+				var w *W
+				if len(p.Value.Value) > 0 {
+					x := p.Value.Value[j]
+					w = &x
+					j++
+					if j == len(p.Value.Value) {
+						j = 0
+						i++
+					}
+				} else {
+					i++
+				}
+				return NewPair(p.Key, NewPair(&v, w)), true
+			}
+		})
+	}, true)
+}
+
+func NewSubtractByKeyRDD[K comparable, V any, W any](rdd1 *RDD[Pair[K, V]], rdd2 *RDD[Pair[K, W]], partitioner Partitioner) *RDD[Pair[K, V]] {
+	cogrouped := Cogroup(rdd1, rdd2, partitioner)
+	return MapPartitions(cogrouped, func(groups Iterator[Pair[K, Pair[[]V, []W]]]) Iterator[Pair[K, V]] {
+		return expandIterator(groups, func(p Pair[K, Pair[[]V, []W]]) Iterator[Pair[K, V]] {
+			if len(p.Value.Value) != 0 {
+				return EmptyIterator[Pair[K, V]]()
+			}
+			return MapIterator(SliceIterator(p.Value.Key), func(v V) Pair[K, V] {
+				return NewPair(p.Key, v)
+			})
+		})
+	}, true)
 }
 
 func Cogroup[K comparable, V any, W any](rdd1 *RDD[Pair[K, V]], rdd2 *RDD[Pair[K, W]], partitioner Partitioner) *RDD[Pair[K, Pair[[]V, []W]]] {

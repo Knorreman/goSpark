@@ -17,6 +17,15 @@ Named broadcasts travel in the job spec as gob bytes, up to 8 MiB combined.
 Their hashes are part of the plan fingerprint. Read them in the factory; do
 not treat them as shuffled data.
 
+Create `NewInt64Accumulator(ctx, "items")` or
+`NewFloat64Accumulator(ctx, "weight")` on the driver, then call
+`BindAccumulators(&spec, ctx)` before `Schedule`. Registered job factories
+recreate handles by the same names on workers; task callbacks call `Add`, and
+only driver handles can call `Value`. Local `Collect` updates handles directly.
+Distributed contributions are returned with task results and merged from the
+final accepted attempts, so lost responses, retries, and shuffle repairs do
+not double-count. Sampling callbacks may be replayed and are not counted.
+
 The driver discovers text and S3 input splits once while planning and ships
 the descriptors (path, offset, length, and partition index) in the job spec.
 Workers install them before reconstructing the factory, so TextFile returns

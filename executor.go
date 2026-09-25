@@ -23,14 +23,15 @@ type Task struct {
 }
 
 type ExecResult struct {
-	PartitionID int
-	Kind        StageKind
-	Manifest    *MapOutputManifest
-	Records     []any
-	Output      *PartitionOutput
-	Cached      []CachePartition
-	Dropped     []CachePartition
-	Samples     []any
+	PartitionID  int
+	Kind         StageKind
+	Manifest     *MapOutputManifest
+	Records      []any
+	Output       *PartitionOutput
+	Cached       []CachePartition
+	Dropped      []CachePartition
+	Samples      []any
+	Accumulators map[string]accumulatorValue
 }
 
 func ExecuteTask(task Task) (ExecResult, error) {
@@ -95,6 +96,7 @@ func ExecuteTaskContext(execution context.Context, task Task) (result ExecResult
 		NumPartitions: task.Job.NumPartitions,
 	})
 	defer ctx.Stop()
+	ctx.prepareAccumulators(task.Job)
 	ctx.distributedCache = task.jobCache
 	if task.budget != nil {
 		ctx.disk.clear()
@@ -209,6 +211,18 @@ func ExecuteTaskContext(execution context.Context, task Task) (result ExecResult
 			}
 			return withCacheUpdates(ctx, ExecResult{PartitionID: task.PartitionID, Kind: StageResult, Output: &out}), nil
 		}
+		if action, ok := getTreeAction(task.Job.Action); ok {
+			part, found := partitionByIndex(rdd, task.PartitionID)
+			if !found {
+				return ExecResult{}, fmt.Errorf("result partition %d not found", task.PartitionID)
+			}
+			partial, valid := action.partial(rdd.ComputeAny(part))
+			res := ExecResult{PartitionID: task.PartitionID, Kind: StageResult}
+			if valid {
+				res.Records = []any{partial}
+			}
+			return withCacheUpdates(ctx, res), nil
+		}
 		recs, err := executeResult(ctx, rdd, *stage, task, store)
 		if err != nil {
 			return ExecResult{}, err
@@ -221,6 +235,7 @@ func ExecuteTaskContext(execution context.Context, task Task) (result ExecResult
 
 func withCacheUpdates(ctx *Context, res ExecResult) ExecResult {
 	res.Cached, res.Dropped = ctx.cacheUpdates()
+	res.Accumulators = ctx.accumulatorUpdates()
 	return res
 }
 

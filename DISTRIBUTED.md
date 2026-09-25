@@ -21,10 +21,12 @@ in order. Runs spill under the configured byte budget and merge two at a time.
 This bounds sorting memory, but still repeats sorting and I/O for each result
 partition: sampled range partitioning remains future work.
 
-Upstream installation downloads buckets to task-local disk using bounded buffers,
-validates frame/manifest checksums, and reads records incrementally. All buckets
-are still fetched to support narrow dependencies whose mapping differs from the
-task index. Dependency-aware fetching and distributed cache reuse remain open.
+Upstream installation downloads only the reducer buckets reached by the task's
+partition through narrow dependencies (including non-identity mappings) and
+uses bucket 0 for a single-bucket global shuffle such as SortByKey. Map
+manifests are still validated in full. Fetches use bounded buffers, validate
+frame/manifest checksums, and read records incrementally. Unmapped shuffles
+fall back to fetching all buckets; distributed cache reuse remains open.
 
 ## Recovery and cancellation
 

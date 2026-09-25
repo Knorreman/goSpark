@@ -22,6 +22,7 @@ type JobSpec struct {
 	TaskName        string            `json:"task_name"`
 	Action          string            `json:"action,omitempty"`
 	Params          map[string]string `json:"params,omitempty"`
+	Broadcasts      []Broadcast       `json:"broadcasts,omitempty"`
 	NumPartitions   int               `json:"num_partitions,omitempty"`
 	ProtocolVersion int               `json:"protocol_version"`
 	ImageDigest     string            `json:"image_digest,omitempty"`

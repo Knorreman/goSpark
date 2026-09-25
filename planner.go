@@ -335,6 +335,12 @@ func fingerprintPlan(plan *JobPlan) string {
 			fmt.Fprintf(h, "param.%s=%s\n", k, spec.Params[k])
 		}
 	}
+	broadcasts := append([]Broadcast(nil), spec.Broadcasts...)
+	sort.Slice(broadcasts, func(i, j int) bool { return broadcasts[i].Name < broadcasts[j].Name })
+	for _, b := range broadcasts {
+		sum := sha256.Sum256(b.Gob)
+		fmt.Fprintf(h, "broadcast.%s=%s\n", b.Name, hex.EncodeToString(sum[:]))
+	}
 	fmt.Fprintf(h, "result=%d\n", plan.ResultStageID)
 	stages := append([]Stage(nil), plan.Stages...)
 	sort.Slice(stages, func(i, j int) bool { return stages[i].ID < stages[j].ID })

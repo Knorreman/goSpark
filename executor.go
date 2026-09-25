@@ -104,6 +104,7 @@ func ExecuteTaskContext(execution context.Context, task Task) (result ExecResult
 		ctx.onClose(func() { _ = task.budget.removeDir(path) })
 	}
 	ctx.execution = execution
+	ctx.installInputSplits(task.Job.InputSplits)
 	rdd, err := factory(ctx, task.Job)
 	if err != nil {
 		return ExecResult{}, err

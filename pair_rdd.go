@@ -1,7 +1,5 @@
 package spark
 
-import "io"
-
 func ReduceByKey[K comparable, V any](rdd *RDD[Pair[K, V]], partitioner Partitioner, fn func(V, V) V) *RDD[Pair[K, V]] {
 	return NewReduceByKeyRDD(rdd, partitioner, fn)
 }
@@ -235,37 +233,25 @@ func SortByKey[K comparable, V any](rdd *RDD[Pair[K, V]], less func(K, K) bool, 
 	if np == 0 {
 		np = 1
 	}
-	// Correctness-first global sort: all map outputs are available to each
-	// result task. External merge sorting bounds RAM; range sampling is future work.
+	registerRecord(*new(K)) // sample keys travel over the worker RPC as gob interfaces
 	sid := rdd.ctx.nextShuffleID()
+	compare := func(a, b any) bool {
+		if ascending {
+			return less(a.(K), b.(K))
+		}
+		return less(b.(K), a.(K))
+	}
+	partitioner := NewRangePartitioner(np, compare)
+	dep := NewShuffleDep(rdd, partitioner, sid, false, nil, func(v any) any { return v.(Pair[K, V]).Key })
+	dep.sortLess = compare
 	return NewRDD[Pair[K, V]](rdd.ctx,
 		func() []Partition { return NewPartitions(np) },
-		func() []Dependency { return []Dependency{NewShuffleDep(rdd, NewHashPartitioner(1), sid, false, nil)} },
+		func() []Dependency { return []Dependency{dep} },
 		func(p Partition) Iterator[Pair[K, V]] {
-			stream, n := externalSort(rdd.ctx, shuffleStream(rdd.ctx, sid, 0, len(rdd.Partitions())), func(a, b any) bool {
-				left, right := a.(Pair[K, V]), b.(Pair[K, V])
-				if ascending {
-					return less(left.Key, right.Key)
-				}
-				return less(right.Key, left.Key)
+			stream, _ := externalSort(rdd.ctx, shuffleStream(rdd.ctx, sid, p.Index(), len(rdd.Partitions())), func(a, b any) bool {
+				return compare(a.(Pair[K, V]).Key, b.(Pair[K, V]).Key)
 			})
-			start, end := p.Index()*n/np, (p.Index()+1)*n/np
-			i := 0
-			return func() (Pair[K, V], bool) {
-				for i < end {
-					v, err := stream.Next()
-					if err == io.EOF {
-						break
-					}
-					must(err)
-					i++
-					if i > start {
-						return v.(Pair[K, V]), true
-					}
-				}
-				must(stream.Close())
-				return Pair[K, V]{}, false
-			}
+			return iteratorFromStream[Pair[K, V]](rdd.ctx, stream)
 		})
 }
 

@@ -13,6 +13,7 @@ type StageKind string
 const (
 	StageResult     StageKind = "result"
 	StageShuffleMap StageKind = "shuffle_map"
+	StageSample     StageKind = "sample" // task phase, not a persisted DAG stage
 )
 
 type Stage struct {
@@ -25,6 +26,7 @@ type Stage struct {
 	NumReducers   int                `json:"num_reducers,omitempty"`
 	Parents       []int              `json:"parents"`
 	CacheHints    [][]CachePartition `json:"cache_hints,omitempty"`
+	RangeSort     bool               `json:"range_sort,omitempty"`
 }
 
 type JobPlan struct {
@@ -32,6 +34,7 @@ type JobPlan struct {
 	Fingerprint   string  `json:"fingerprint"`
 	Stages        []Stage `json:"stages"`
 	ResultStageID int     `json:"result_stage_id"`
+	sortLess      map[int]func(any, any) bool
 }
 
 func PlanJob(spec JobSpec) (*JobPlan, error) {
@@ -89,6 +92,7 @@ func PlanRDD(rdd RDDAny, spec JobSpec) (*JobPlan, error) {
 		Parents:       uniqueInts(parents),
 	}
 	p.stages = append(p.stages, result)
+	sortLess := map[int]func(any, any) bool{}
 	for i := range p.stages {
 		stage := &p.stages[i]
 		root := rdd
@@ -98,6 +102,10 @@ func PlanRDD(rdd RDDAny, spec JobSpec) (*JobPlan, error) {
 				return nil, fmt.Errorf("shuffle %d not found", stage.ShuffleID)
 			}
 			root = dep.Parent()
+			if dep.sortLess != nil && dep.partitioner.NumPartitions() > 1 {
+				stage.RangeSort = true
+				sortLess[stage.ID] = dep.sortLess
+			}
 		}
 		if !containsShareableCache(root) {
 			continue
@@ -119,6 +127,7 @@ func PlanRDD(rdd RDDAny, spec JobSpec) (*JobPlan, error) {
 		Spec:          spec,
 		Stages:        p.stages,
 		ResultStageID: resultID,
+		sortLess:      sortLess,
 	}
 	plan.Fingerprint = fingerprintPlan(plan)
 	return plan, nil
@@ -332,7 +341,7 @@ func fingerprintPlan(plan *JobPlan) string {
 	for _, s := range stages {
 		fmt.Fprintf(h, "stage=%d,%s,rdd=%d,parts=%d,shuf=%d,red=%d,parents=%s,name=%s\n",
 			s.ID, s.Kind, s.RDDID, s.NumPartitions, s.ShuffleID, s.NumReducers, joinInts(s.Parents), s.RDDName)
-		fmt.Fprintf(h, "cached=%v\n", s.CacheHints)
+		fmt.Fprintf(h, "cached=%v,range=%t\n", s.CacheHints, s.RangeSort)
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

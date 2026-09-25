@@ -71,6 +71,7 @@ type ShuffleDep struct {
 	mapSideCombine bool
 	aggregator     *AggregatorAny
 	keyExtractor   func(any) any
+	sortLess       func(any, any) bool // nil for non-range shuffles
 }
 
 func NewShuffleDep(parent RDDAny, partitioner Partitioner, shuffleID int, mapSideCombine bool, agg *AggregatorAny, keyExtractor ...func(any) any) *ShuffleDep {

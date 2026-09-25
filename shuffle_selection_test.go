@@ -51,9 +51,6 @@ func TestResultFetchesOnlyRequiredBuckets(t *testing.T) {
 				requested = append(requested, fmt.Sprintf("%d/r%s", shuffle, parts[4]))
 				mu.Unlock()
 				wanted := int(activePartition.Load())
-				if job == "multi-stage-check" {
-					wanted = 0
-				}
 				if reducer != wanted {
 					http.Error(w, "unrelated bucket", http.StatusNotFound)
 					return
@@ -96,12 +93,8 @@ func TestResultFetchesOnlyRequiredBuckets(t *testing.T) {
 					t.Fatal("no shuffle buckets fetched")
 				}
 				for _, req := range got {
-					// SortByKey has a single global reducer bucket, even for
-					// result partitions with other indices.
+					// Range-sorted results fetch only their own reducer bucket.
 					want := part
-					if job == "multi-stage-check" {
-						want = 0
-					}
 					if !strings.HasSuffix(req, fmt.Sprintf("/r%d", want)) {
 						t.Fatalf("partition %d fetched unrelated bucket %s (all: %v)", part, req, got)
 					}

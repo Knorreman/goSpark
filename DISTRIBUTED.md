@@ -14,12 +14,17 @@ Fingerprints describe the existing planner's stage structure and JobSpec;
 they do not hash Go function bodies or guarantee arbitrary closures are equal.
 Use identical application builds and deterministic factories on all workers.
 
-SortByKey is lazy and executable by remote tasks. It currently shuffles records
-into one bucket; each output task externally sorts the global input and emits
-its contiguous ordered slice. Both Schedule and Collect concatenate partitions
-in order. Runs spill under the configured byte budget and merge two at a time.
-This bounds sorting memory, but still repeats sorting and I/O for each result
-partition: sampled range partitioning remains future work.
+SortByKey is lazy and executable by remote tasks. For multiple output
+partitions, workers first sample up to 64 keys per input partition (up to 4 KiB
+encoded per key); the driver caps the combined sample at 4,096 keys and
+chooses range boundaries using the user comparator. Map tasks then reread
+their input, shuffle into range buckets, and result tasks externally sort
+only their own bucket. Both Schedule and Collect concatenate partitions in
+order. Runs spill under the configured byte budget and merge two at a time.
+Equal keys always go to the same side of a boundary; highly skewed keys can
+still create large, uneven buckets. Input is read twice for sampling and map
+publication, so callbacks and input sources must tolerate replay. A single
+output partition skips sampling and sorts one bucket.
 
 Upstream installation downloads only the reducer buckets reached by the task's
 partition through narrow dependencies (including non-identity mappings) and

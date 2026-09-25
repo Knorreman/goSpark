@@ -62,8 +62,8 @@ run_task() {
   pod=$(kubectl get pods -n "$NAMESPACE" -l job-name=gospark-driver --field-selector=status.phase=Succeeded -o jsonpath='{.items[0].metadata.name}')
   out=$(kubectl logs -n "$NAMESPACE" "$pod")
   echo "$out"
-  grep -q "Schedule PASSED!" <<<"$out"
-  grep -q "$marker" <<<"$out"
+  grep -F -q "Schedule PASSED!" <<<"$out"
+  grep -F -q "$marker" <<<"$out"
 }
 
 run_task k8s-broadcast "" "BROADCAST a=3 b=5"

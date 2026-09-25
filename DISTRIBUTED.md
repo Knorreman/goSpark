@@ -26,6 +26,14 @@ Distributed contributions are returned with task results and merged from the
 final accepted attempts, so lost responses, retries, and shuffle repairs do
 not double-count. Sampling callbacks may be replayed and are not counted.
 
+The driver discovers text and S3 input splits once while planning and ships
+the descriptors (path, offset, length, and partition index) in the job spec.
+Workers install them before reconstructing the factory, so TextFile returns
+the same partitions and the fingerprint matches even when a worker cannot
+list the path. Workers still open those files at execution time; a missing
+file fails the task instead of listing again. Collect and PlanJob without
+shipped splits keep the current listing behavior.
+
 SortByKey is lazy and executable by remote tasks. For multiple output
 partitions, workers first sample up to 64 keys per input partition (up to 4 KiB
 encoded per key); the driver caps the combined sample at 4,096 keys and

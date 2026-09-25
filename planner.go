@@ -30,10 +30,11 @@ type Stage struct {
 }
 
 type JobPlan struct {
-	Spec          JobSpec `json:"spec"`
-	Fingerprint   string  `json:"fingerprint"`
-	Stages        []Stage `json:"stages"`
-	ResultStageID int     `json:"result_stage_id"`
+	Spec          JobSpec      `json:"spec"`
+	Fingerprint   string       `json:"fingerprint"`
+	Stages        []Stage      `json:"stages"`
+	ResultStageID int          `json:"result_stage_id"`
+	InputSplits   []InputSplit `json:"input_splits,omitempty"`
 	sortLess      map[int]func(any, any) bool
 }
 
@@ -62,6 +63,7 @@ func PlanJob(spec JobSpec) (*JobPlan, error) {
 	})
 	defer ctx.Stop()
 	ctx.prepareAccumulators(spec)
+	ctx.installInputSplits(spec.InputSplits)
 	rdd, err := factory(ctx, spec)
 	if err != nil {
 		return nil, err
@@ -130,6 +132,7 @@ func PlanRDD(rdd RDDAny, spec JobSpec) (*JobPlan, error) {
 		ResultStageID: resultID,
 		sortLess:      sortLess,
 	}
+	plan.InputSplits = captureInputSplits(rdd)
 	plan.Fingerprint = fingerprintPlan(plan)
 	return plan, nil
 }
@@ -354,6 +357,13 @@ func fingerprintPlan(plan *JobPlan) string {
 		fmt.Fprintf(h, "stage=%d,%s,rdd=%d,parts=%d,shuf=%d,red=%d,parents=%s,name=%s\n",
 			s.ID, s.Kind, s.RDDID, s.NumPartitions, s.ShuffleID, s.NumReducers, joinInts(s.Parents), s.RDDName)
 		fmt.Fprintf(h, "cached=%v,range=%t\n", s.CacheHints, s.RangeSort)
+	}
+	if len(plan.InputSplits) > 0 {
+		splits := append([]InputSplit(nil), plan.InputSplits...)
+		sort.Slice(splits, func(i, j int) bool { return inputSplitLess(splits[i], splits[j]) })
+		for _, s := range splits {
+			fmt.Fprintf(h, "input source=%q call=%d part=%d path=%q off=%d len=%d\n", s.Source, s.Call, s.Partition, s.Path, s.Offset, s.Length)
+		}
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

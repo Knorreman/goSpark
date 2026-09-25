@@ -13,6 +13,9 @@ import (
 
 func TestMain(m *testing.M) {
 	registerSchedWC()
+	if os.Getenv("GOSPARK_TEST_HIDE_TEXT_LISTING") == "1" {
+		hideTextListing = func(string) bool { return true }
+	}
 	if os.Getenv("GOSPARK_WORKER_SERVE") == "1" {
 		store := os.Getenv("GOSPARK_STORE")
 		srv, addr, err := ServeWorker(store, "127.0.0.1:0")
@@ -131,10 +134,15 @@ func startTestWorker(t *testing.T) *WorkerClient {
 }
 
 func startKillableWorker(t *testing.T) (*WorkerClient, func()) {
+	return startKillableWorkerEnv(t)
+}
+
+func startKillableWorkerEnv(t *testing.T, extraEnv ...string) (*WorkerClient, func()) {
 	t.Helper()
 	store := t.TempDir()
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	cmd.Env = append(os.Environ(), "GOSPARK_WORKER_SERVE=1", "GOSPARK_STORE="+store)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)

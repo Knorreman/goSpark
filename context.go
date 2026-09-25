@@ -25,6 +25,8 @@ type Context struct {
 	cacheTouched     map[CachePartition]bool
 	cacheDropped     map[CachePartition]bool
 	accumulators     accumulatorSet
+	textSeq          int
+	textInputs       map[textInputKey][]InputSplit
 }
 
 func NewContext(conf *Config) *Context {

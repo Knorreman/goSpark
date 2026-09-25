@@ -92,6 +92,9 @@ func ScheduleContext(ctx context.Context, spec JobSpec, runners []TaskRunner, op
 	if err != nil {
 		return nil, err
 	}
+	if action, ok := getTreeAction(spec.Action); ok {
+		return mergeTreeResults(action, results)
+	}
 	var records []any
 	for _, r := range results {
 		records = append(records, r.Records...)
@@ -145,6 +148,9 @@ func scheduleResults(ctx context.Context, spec JobSpec, runners []TaskRunner, op
 	plan, err := PlanJob(spec)
 	if err != nil {
 		return nil, "", 0, err
+	}
+	if len(plan.InputSplits) > 0 {
+		spec.InputSplits = plan.InputSplits
 	}
 	if len(orderedStages(plan)) != len(plan.Stages) {
 		return nil, "", 0, fmt.Errorf("invalid stage DAG")

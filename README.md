@@ -98,6 +98,11 @@ The joins example demonstrates inner/left joins, cogroup, set operations,
 Cartesian products, and zip. The text-file example creates its own temporary
 input and output. More examples are in [`examples/`](examples/).
 
+`FullOuterJoin(left, right, partitioner)` yields `Pair[*V, *W]`: nil marks an
+absent side, and shared keys produce every combination. `SubtractByKey(left,
+right, partitioner)` keeps every left record whose key does not occur on the
+right, including duplicate left values.
+
 ### A complete wordcount application
 
 ```go
@@ -137,6 +142,16 @@ func main() {
 Results are `hello: 3`, `world: 2`, and `spark: 2`; key order is unspecified.
 Use `spark.TextFile(ctx, "input.txt", 2)` instead of `Parallelize` for a local
 text file. `Collect` brings the whole result into the caller's memory.
+`TreeAggregate(rdd, zero, seqOp, combOp)` and `TreeReduce(rdd, fn)` fold
+within partitions before merging partials; `TreeReduce` returns `(value, false)`
+for empty input. Mutable zero values are copied for each partition.
+
+Partition operations: `Lookup(pairs, key)` reads the key's partition when one
+is set (otherwise scans); `ForEachPartition(rdd, fn)` runs an iterator callback
+once per partition without returning records. `ZipWithIndex(rdd)` numbers rows
+in partition order, starting at zero; it rereads preceding partitions to count
+them, so inputs should be deterministic. `ZipPartitions(rdds, fn)` passes the
+same-index iterators from any number of equal-partition-count RDDs to `fn`.
 
 ### Run the bundled worker in a container
 
@@ -274,8 +289,8 @@ disables goSpark's default-chain opt-in; use the Go setting when you need both.
 directory or S3 prefix. A single file is split by byte ranges. Multiple files
 stay whole and are balanced across the requested partitions; names starting
 with `.` or `_` (including `_SUCCESS`) are skipped. Use it inside a registered
-job so every worker lists the same path. The bundled `k8s-wc` job uses a small
-built-in dataset.
+job so the driver ships those splits to every worker. The bundled `k8s-wc`
+job uses a small built-in dataset.
 
 ### Save distributed results to S3
 
@@ -361,6 +376,13 @@ records, err := spark.Schedule(spark.JobSpec{
 _ = records
 _ = err
 ```
+
+For a bounded aggregate result, register `RegisterTreeAggregate[T, U](action,
+zero, seqOp, combOp)` or `RegisterTreeReduce[T](action, fn)` in both the driver
+and worker program, then use that name as `JobSpec.Action` with `Schedule`.
+Workers send at most one partial per result partition; `Schedule` returns one
+merged record (or none for an empty tree reduction). The zero must be an
+identity for `combOp`; use associative operations for predictable results.
 
 Use `JobSpec.Params` for explicit inputs/parameters and `ScheduleSave` for
 distributed output. `AddBroadcast` attaches a small gob-encoded lookup (8 MiB

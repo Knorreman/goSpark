@@ -84,8 +84,10 @@ type textSpan struct {
 }
 
 type textFilePartition struct {
-	index int
-	files []textSpan
+	index  int
+	source string
+	seq    int
+	files  []textSpan
 }
 
 func (p *textFilePartition) Index() int { return p.index }
@@ -98,10 +100,23 @@ func newTextFileRDD(ctx *Context, path string, numPartitions int) *RDD[string] {
 	resolved := resolvePath(path, s3cfg)
 	fs := resolved.FS
 	filePath := resolved.BasePath
+	seq := 0
+	if ctx != nil {
+		seq = ctx.nextTextInputSeq()
+	}
 	return NewRDD[string](
 		ctx,
 		func() []Partition {
-			return textInputPartitions(fs, filePath, numPartitions)
+			if parts, ok := plannedTextPartitions(ctx, path, seq); ok {
+				return parts
+			}
+			parts := textInputPartitions(fs, filePath, numPartitions)
+			for _, part := range parts {
+				tp := part.(*textFilePartition)
+				tp.source = path
+				tp.seq = seq
+			}
+			return parts
 		},
 		func() []Dependency { return nil },
 		func(partition Partition) Iterator[string] {
@@ -116,6 +131,9 @@ func newTextFileRDD(ctx *Context, path string, numPartitions int) *RDD[string] {
 }
 
 func textInputPartitions(fs FileSystem, filePath string, numPartitions int) []Partition {
+	if hideTextListing != nil && hideTextListing(filePath) {
+		return []Partition{&textFilePartition{index: 0}}
+	}
 	info, statErr := fs.Stat(filePath)
 	if statErr == nil && !info.Dir {
 		return splitTextFile(filePath, info.Size, numPartitions)
@@ -238,7 +256,7 @@ func newTextFileIteratorFS(fs FileSystem, path string, offset, length int64, con
 	if offset > 0 {
 		prev, err := readByteAt(fs, path, offset-1)
 		if err != nil {
-			return func() (string, bool) { panic(err) }
+			return func() (string, bool) { must(err); return "", false }
 		}
 		if prev != '\n' {
 			skipFirst = true
@@ -246,7 +264,7 @@ func newTextFileIteratorFS(fs FileSystem, path string, offset, length int64, con
 	}
 	file, err := fs.OpenFrom(path, offset)
 	if err != nil {
-		return func() (string, bool) { panic(err) }
+		return func() (string, bool) { must(err); return "", false }
 	}
 	limit := defaultRecordBytes
 	if len(contexts) > 0 {

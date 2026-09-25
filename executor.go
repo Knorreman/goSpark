@@ -82,6 +82,9 @@ func ExecuteTaskContext(execution context.Context, task Task) (result ExecResult
 	if task.Fingerprint != "" && task.Fingerprint != plan.Fingerprint {
 		return ExecResult{}, fmt.Errorf("driver/worker graph fingerprint mismatch")
 	}
+	if task.Job.CacheIdentity != "" && task.Fingerprint != plan.Fingerprint {
+		return ExecResult{}, fmt.Errorf("reusable cache requires matching graph fingerprint")
+	}
 	factory, ok := GetJob(task.Job.TaskName)
 	if !ok {
 		return ExecResult{}, fmt.Errorf("job %q not registered", task.Job.TaskName)
@@ -108,6 +111,11 @@ func ExecuteTaskContext(execution context.Context, task Task) (result ExecResult
 	rdd, err := factory(ctx, task.Job)
 	if err != nil {
 		return ExecResult{}, err
+	}
+	if task.Job.CacheIdentity != "" && cacheAcrossTasks(rdd) {
+		if output, ok := rdd.(interface{ persistOutput() }); ok {
+			output.persistOutput()
+		}
 	}
 	jobID := task.JobID
 	if jobID == "" {

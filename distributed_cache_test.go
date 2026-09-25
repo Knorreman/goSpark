@@ -10,8 +10,15 @@ import (
 )
 
 var cachedInputCalls atomic.Int64
+var reusableOutputCalls atomic.Int64
 
 func init() {
+	RegisterJob("reusable-output", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+		return Map(Parallelize(ctx, []int{1, 2, 3, 4}, 4), func(v int) int {
+			reusableOutputCalls.Add(1)
+			return v * 10
+		}), nil
+	})
 	RegisterJob("cached-fanout", func(ctx *Context, spec JobSpec) (RDDAny, error) {
 		input := Parallelize(ctx, []Pair[int, int]{NewPair(1, 10), NewPair(2, 20), NewPair(3, 30)}, 3)
 		shared := Cache(Map(input, func(p Pair[int, int]) Pair[int, int] {
@@ -24,6 +31,99 @@ func init() {
 		})
 		return Join(left, right, NewHashPartitioner(3)), nil
 	})
+}
+
+func TestScheduleCacheAcrossJobsAndWorkerReplacement(t *testing.T) {
+	reusableOutputCalls.Store(0)
+	dir := t.TempDir()
+	srv, addr, err := ServeWorker(dir, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	a := &WorkerClient{BaseURL: "http://" + addr}
+	b := startCacheTestWorker(t)
+	runners := []TaskRunner{a, b}
+	cache := NewScheduleCache(runners)
+	spec, err := cache.Persist("numbers", JobSpec{TaskName: "reusable-output", Action: ActionCollect, NumPartitions: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(want int64) {
+		t.Helper()
+		recs, err := Schedule(spec, runners)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(recs, []any{10, 20, 30, 40}) || reusableOutputCalls.Load() != want {
+			t.Fatalf("records=%v computations=%d, want %d", recs, reusableOutputCalls.Load(), want)
+		}
+	}
+	run(4)
+	run(4)
+	if err := srv.Close(); err != nil {
+		t.Fatal(err)
+	}
+	replacement, _, err := ServeWorker(dir, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = replacement.Close() })
+	run(6) // Two partitions were on the replaced worker.
+	if err := cache.Unpersist(context.Background(), "numbers"); err != nil {
+		t.Fatal(err)
+	}
+	run(10)
+	if err := cache.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestScheduleCacheFingerprintSeparatesInputs(t *testing.T) {
+	reusableOutputCalls.Store(0)
+	worker := startCacheTestWorker(t)
+	cache := NewScheduleCache([]TaskRunner{worker})
+	defer cache.Stop(context.Background())
+	base := JobSpec{TaskName: "reusable-output", Action: ActionCollect, NumPartitions: 4}
+	first, _ := cache.Persist("numbers", base)
+	second := first
+	second.Params = map[string]string{"version": "new"}
+	for _, spec := range []JobSpec{first, second, first} {
+		if _, err := Schedule(spec, []TaskRunner{worker}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := reusableOutputCalls.Load(); got != 8 {
+		t.Fatalf("different fingerprint reused cached output: computations=%d", got)
+	}
+}
+
+func TestScheduleCacheReusesPreShuffleInput(t *testing.T) {
+	cachedInputCalls.Store(0)
+	runners := []TaskRunner{startCacheTestWorker(t), startCacheTestWorker(t)}
+	cache := NewScheduleCache(runners)
+	spec, err := cache.Persist("fanout", JobSpec{TaskName: "cached-fanout", Action: ActionCollect, NumPartitions: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		recs, err := Schedule(spec, runners)
+		if err != nil || len(recs) != 3 {
+			t.Fatalf("schedule %d: records=%v err=%v", i, recs, err)
+		}
+	}
+	if got := cachedInputCalls.Load(); got != 3 {
+		t.Fatalf("pre-shuffle input computed %d times; want 3", got)
+	}
+	if err := cache.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Schedule(spec, runners); err != nil {
+		t.Fatal(err)
+	}
+	if got := cachedInputCalls.Load(); got != 6 {
+		t.Fatalf("Stop retained cached input: computations=%d", got)
+	}
 }
 
 type cacheWorker struct {

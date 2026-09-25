@@ -20,6 +20,7 @@ type TaskFunc func(ctx *Context) RDDAny
 
 type JobSpec struct {
 	TaskName        string            `json:"task_name"`
+	CacheIdentity   string            `json:"cache_identity,omitempty"`
 	Action          string            `json:"action,omitempty"`
 	Params          map[string]string `json:"params,omitempty"`
 	Broadcasts      []Broadcast       `json:"broadcasts,omitempty"`

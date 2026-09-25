@@ -127,6 +127,9 @@ func ScheduleSaveContext(ctx context.Context, spec JobSpec, runners []TaskRunner
 }
 
 func scheduleResults(ctx context.Context, spec JobSpec, runners []TaskRunner, opts ScheduleOpts) ([]ExecResult, string, int, error) {
+	if spec.CacheIdentity != "" && !cacheIdentityPattern.MatchString(spec.CacheIdentity) {
+		return nil, "", 0, fmt.Errorf("invalid reusable cache identity %q", spec.CacheIdentity)
+	}
 	if len(runners) == 0 {
 		return nil, "", 0, fmt.Errorf("no workers")
 	}

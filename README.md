@@ -375,8 +375,11 @@ arbitrary `JobSpec.Params` requires your own Go driver.
 
 ## Linear regression
 
-The `goSpark/mllib` package fits ordinary least squares. Import it from the
-worker program as well as the driver so the training job is registered. The
+The `goSpark/mllib` package trains linear regression with L-BFGS, the scalable
+solver Spark uses instead of a driver-side normal-equation solve. Each
+iteration broadcasts the current weights. Workers stream their own rows and
+return a gradient; the driver updates the weights and does not collect the
+training rows. Import it from the worker program as well as the driver. The
 bundled worker image already does this.
 
 ```go
@@ -384,9 +387,15 @@ model, err := mllib.TrainFiles("s3://bucket/train/", workers, 4, mllib.DefaultCo
 prediction, err := model.Predict([]float64{1.5, -2})
 ```
 
-Training text is one row per line: `label f1 f2 ...`. The fit sums normal
-equations per partition, so feature count is capped at 32 by default. This is
-not regularized regression, classification, or a general ML pipeline.
+Training text is one row per line: `label f1 f2 ...`. Features are standardized
+for the solver and converted back to the original scale. Each iteration
+re-reads the input and returns only an O(features) gradient. The default is at
+most 100 iterations, with no L2 penalty.
+
+`TrainLogistic` uses the same loop for binary classification. Labels must be
+0 or 1. `Predict` returns the class at probability 0.5, and
+`PredictProbability` returns the positive-class probability. This is not a
+general ML pipeline.
 
 ## Configuration
 
@@ -476,9 +485,9 @@ Additional directions:
   with an operator to create and monitor driver Jobs and executor pods, manage
   retries and cleanup, and report job status through Kubernetes. Today you
   deploy the generated manifests and submit Jobs yourself.
-- **More MLlib algorithms:** Linear regression with ordinary least squares is
-  available in `goSpark/mllib`. Classification, regularization, and feature
-  pipelines are not implemented yet.
+- **More MLlib algorithms:** Linear and binary logistic regression are trained
+  with distributed L-BFGS in `goSpark/mllib`. Multiclass classification and
+  feature pipelines are not implemented yet.
 
 ## Tests and troubleshooting
 

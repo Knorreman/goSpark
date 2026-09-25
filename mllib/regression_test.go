@@ -37,7 +37,7 @@ func TestLinearRegressionRecoversKnownLine(t *testing.T) {
 			points = append(points, LabeledPoint{Label: 1 + 2*float64(x) - 3*float64(z), Features: []float64{float64(x), float64(z)}})
 		}
 	}
-	model, err := Train(points, Config{FitIntercept: true})
+	model, err := Train(points, Config{FitIntercept: true, Iterations: 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,12 +62,28 @@ func TestLinearRegressionDistributedFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	model, err := TrainFiles(dir, []spark.TaskRunner{startWorker(t), startWorker(t)}, 2, Config{FitIntercept: true})
+	model, err := TrainFiles(dir, []spark.TaskRunner{startWorker(t), startWorker(t)}, 2, Config{FitIntercept: true, Iterations: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertNear(t, model.Intercept, 1)
 	assertNear(t, model.Weights[0], 2)
+}
+
+func TestLinearRegressionCorrelatedFeatures(t *testing.T) {
+	var points []LabeledPoint
+	for i := 0; i < 12; i++ {
+		x := float64(i)
+		z := 0.25*x + float64(i%3)
+		points = append(points, LabeledPoint{Label: 4 + 3*x - 2*z, Features: []float64{x, z}})
+	}
+	model, err := Train(points, Config{FitIntercept: true, Iterations: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNear(t, model.Intercept, 4)
+	assertNear(t, model.Weights[0], 3)
+	assertNear(t, model.Weights[1], -2)
 }
 
 func TestLinearRegressionRejectsBadInput(t *testing.T) {

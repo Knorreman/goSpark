@@ -134,6 +134,20 @@ for outputs larger than memory. Disk space is not quota-managed yet. Sort/fetch
 scratch files are owned by the Context and cleaned on Stop (task contexts Stop
 on both success and failure); published map outputs must remain for reducers.
 
+After a distributed job finishes or fails, the driver asks each configured
+worker to delete that job's published shuffle files. A worker refuses cleanup
+while it still has active tasks; the driver retries briefly with an independent
+context so cancellation does not prevent cleanup. Cleanup is best effort:
+unreachable workers, crashed drivers, and custom runners without cleanup support
+may leave orphaned job directories. Never remove a live job's shuffle files to
+reclaim disk; lost blocks trigger recovery but can exhaust its retry budget.
+
+Set `GOSPARK_SHUFFLE_MAP_MAX_BYTES` (positive bytes) on every executor to fail
+a single shuffle map attempt before its encoded output exceeds that size,
+including bucket headers. Failed attempts remove their unpublished temporary
+files. This is a **per-map-output limit**, not a worker-wide quota: concurrent
+maps, shuffle fetch scratch files, and other workloads can consume more disk.
+
 The memory CI job streams a **320 MiB** dataset through external sort and a
 high-cardinality/skewed ReduceByKey inside a **128 MiB** container (swap disabled,
 GOMEMLIMIT=64MiB), checking every sorted record and aggregate. Local validation

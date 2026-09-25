@@ -110,8 +110,10 @@ func (s *DiskShuffleStore) ReadReduce(shuffleID, reduceID int, maps []MapOutputM
 }
 
 func (s *DiskShuffleStore) mapDir(jobID string, shuffleID, mapID, attempt int) string {
-	return filepath.Join(s.root, jobID, fmt.Sprintf("s%d", shuffleID), fmt.Sprintf("m%d-a%d", mapID, attempt))
+	return filepath.Join(s.jobDir(jobID), fmt.Sprintf("s%d", shuffleID), fmt.Sprintf("m%d-a%d", mapID, attempt))
 }
+
+func (s *DiskShuffleStore) jobDir(jobID string) string { return filepath.Join(s.root, jobID) }
 
 func bucketName(reduceID int) string {
 	return fmt.Sprintf("r%d", reduceID)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,19 @@ type ContextTaskRunner interface {
 	ExecContext(context.Context, Task) (ExecResult, error)
 }
 type localRunner struct{ storeDir string }
+
+// JobCleaner releases shuffle output once the driver has stopped scheduling
+// attempts for a job. Runners without cleanup support retain their own data.
+type JobCleaner interface {
+	CleanupJobContext(context.Context, string) error
+}
+
+func (r localRunner) CleanupJobContext(_ context.Context, jobID string) error {
+	if !validJobID(jobID) {
+		return fmt.Errorf("invalid job ID")
+	}
+	return os.RemoveAll(NewDiskShuffleStore(r.storeDir).jobDir(jobID))
+}
 
 func (r localRunner) Exec(task Task) (ExecResult, error) {
 	return r.ExecContext(context.Background(), task)
@@ -137,6 +151,7 @@ func scheduleResults(ctx context.Context, spec JobSpec, runners []TaskRunner, op
 		return nil, "", 0, err
 	}
 	s := &lineageScheduler{ctx: ctx, spec: spec, plan: plan, runners: runners, opts: opts, jobID: fmt.Sprintf("job-%x", id), accepted: map[taskKey]ExecResult{}, attempts: map[taskKey]int{}}
+	defer cleanupJob(runners, s.jobID)
 	result, _ := stageByID(plan, plan.ResultStageID)
 	stages := orderedStages(plan)
 	// Only the coordinator mutates scheduler state. Independent tasks in a stage
@@ -170,6 +185,26 @@ func scheduleResults(ctx context.Context, spec JobSpec, runners []TaskRunner, op
 			return results, s.jobID, result.ID, nil
 		}
 	}
+}
+
+func cleanupJob(runners []TaskRunner, jobID string) {
+	// Cleanup is best effort: worker loss must not turn a successful job into
+	// a failure, and a cancelled job still needs an independent cleanup context.
+	var wg sync.WaitGroup
+	for _, runner := range runners {
+		cleaner, ok := runner.(JobCleaner)
+		if !ok {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = cleaner.CleanupJobContext(ctx, jobID)
+		}()
+	}
+	wg.Wait()
 }
 
 type taskCompletion struct {

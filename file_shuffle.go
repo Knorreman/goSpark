@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 )
 
@@ -140,6 +141,17 @@ func writeStreamMap(ctx *Context, store *DiskShuffleStore, dep *ShuffleDep, part
 	if n <= 0 {
 		return manifest, fmt.Errorf("invalid reducer count")
 	}
+	var maxBytes int64
+	if raw := os.Getenv("GOSPARK_SHUFFLE_MAP_MAX_BYTES"); raw != "" {
+		maxBytes, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || maxBytes <= 0 {
+			return manifest, fmt.Errorf("invalid GOSPARK_SHUFFLE_MAP_MAX_BYTES %q", raw)
+		}
+	}
+	usedBytes := int64(n) * 8 // each bucket starts with a framing header
+	if maxBytes > 0 && usedBytes > maxBytes {
+		return manifest, fmt.Errorf("shuffle map output exceeds %d byte limit", maxBytes)
+	}
 	dir := store.mapDir(job, dep.shuffleID, mapID, attempt)
 	if err = os.MkdirAll(filepath.Dir(dir), 0755); err != nil {
 		return manifest, err
@@ -183,6 +195,10 @@ func writeStreamMap(ctx *Context, store *DiskShuffleStore, dep *ShuffleDep, part
 		if e = recordLimit(len(p), ctx.recordBytes()); e != nil {
 			return e
 		}
+		if maxBytes > 0 && int64(len(p))+8 > maxBytes-usedBytes {
+			return fmt.Errorf("shuffle map output exceeds %d byte limit", maxBytes)
+		}
+		usedBytes += int64(len(p)) + 8
 		if writers[rid].file == nil {
 			if len(active) == 16 {
 				if e = writers[active[0]].suspend(); e != nil {

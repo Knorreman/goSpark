@@ -26,7 +26,7 @@ func externalSort(ctx *Context, input recordStream, less func(any, any) bool) (r
 		must(err)
 		defer r.Close()
 		target := path()
-		w, err := newBucketWriter(target)
+		w, err := newBucketWriter(target, ctx.shuffleBudget)
 		must(err)
 		defer w.suspend()
 		a, ea := l.Next()
@@ -55,8 +55,8 @@ func externalSort(ctx *Context, input recordStream, less func(any, any) bool) (r
 		must(err)
 		must(l.Close())
 		must(r.Close())
-		must(os.Remove(left))
-		must(os.Remove(right))
+		must(ctx.shuffleBudget.removeFile(left))
+		must(ctx.shuffleBudget.removeFile(right))
 		return target
 	}
 	push := func(run string) {
@@ -81,7 +81,7 @@ func externalSort(ctx *Context, input recordStream, less func(any, any) bool) (r
 		}
 		sort.SliceStable(chunk, func(i, j int) bool { return less(chunk[i], chunk[j]) })
 		run := path()
-		w, err := newBucketWriter(run)
+		w, err := newBucketWriter(run, ctx.shuffleBudget)
 		must(err)
 		func() {
 			defer w.suspend()
@@ -132,22 +132,23 @@ func externalSort(ctx *Context, input recordStream, less func(any, any) bool) (r
 	}
 	if final == "" {
 		final = path()
-		w, err := newBucketWriter(final)
+		w, err := newBucketWriter(final, ctx.shuffleBudget)
 		must(err)
 		_, err = w.finish()
 		must(err)
 	}
 	r, err := openBucketFile(final, codec, ctx.recordBytes())
 	must(err)
-	s := &sortedRun{bucketReader: r, dir: dir}
+	s := &sortedRun{bucketReader: r, dir: dir, budget: ctx.shuffleBudget}
 	ctx.onClose(func() { _ = s.Close() })
 	return s, count
 }
 
 type sortedRun struct {
 	*bucketReader
-	dir  string
-	done bool
+	dir    string
+	budget *diskBudget
+	done   bool
 }
 
 func (s *sortedRun) Next() (any, error) {
@@ -163,7 +164,7 @@ func (s *sortedRun) Close() error {
 	}
 	s.done = true
 	err := s.bucketReader.Close()
-	removeErr := os.RemoveAll(s.dir)
+	removeErr := s.budget.removeDir(s.dir)
 	if err != nil {
 		return err
 	}

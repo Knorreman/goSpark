@@ -87,6 +87,7 @@ func (r *bucketReader) Close() error {
 }
 
 type bucketWriter struct {
+	budget   *diskBudget
 	path     string
 	file     *os.File
 	buffer   *bufio.Writer
@@ -96,9 +97,18 @@ type bucketWriter struct {
 	unsynced int
 }
 
-func newBucketWriter(path string) (*bucketWriter, error) {
-	f, err := os.Create(path)
+func newBucketWriter(path string, budget ...*diskBudget) (*bucketWriter, error) {
+	var b *diskBudget
+	if len(budget) > 0 {
+		b = budget[0]
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 	if err != nil {
+		return nil, err
+	}
+	if err = b.reserve(path, 8); err != nil {
+		f.Close()
+		os.Remove(path)
 		return nil, err
 	}
 	if _, err = f.Write(append(shuffleMagic[:], 0, 0, 0, 0)); err != nil {
@@ -108,11 +118,14 @@ func newBucketWriter(path string) (*bucketWriter, error) {
 	if err = f.Close(); err != nil {
 		return nil, err
 	}
-	return &bucketWriter{path: path, size: 8}, nil
+	return &bucketWriter{path: path, size: 8, budget: b}, nil
 }
 func (w *bucketWriter) append(payload []byte) error {
 	if w.count == ^uint32(0) {
 		return fmt.Errorf("shuffle bucket record count exceeds GSH1 limit")
+	}
+	if err := w.budget.reserve(w.path, int64(len(payload))+8); err != nil {
+		return err
 	}
 	if w.file == nil {
 		f, err := os.OpenFile(w.path, os.O_WRONLY|os.O_APPEND, 0644)

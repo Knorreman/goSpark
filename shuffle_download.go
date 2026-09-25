@@ -40,18 +40,28 @@ func cacheShuffleBucket(ctx *Context, store *DiskShuffleStore, m MapOutputManife
 		return "", err
 	}
 	name := f.Name()
+	if err := ctx.shuffleBudget.reserve(name, meta.Bytes); err != nil {
+		f.Close()
+		os.Remove(name)
+		return "", err
+	}
 	success := false
 	defer func() {
 		f.Close()
 		if !success {
-			os.Remove(name)
+			_ = ctx.shuffleBudget.removeFile(name)
 		}
 	}()
-	n, err := io.CopyBuffer(f, src, make([]byte, 32<<10))
+	n, err := io.CopyBuffer(f, io.LimitReader(src, meta.Bytes), make([]byte, 32<<10))
 	if err != nil {
 		return "", err
 	}
-	if n != meta.Bytes {
+	var extra [1]byte
+	more, extraErr := src.Read(extra[:])
+	if extraErr != nil && extraErr != io.EOF {
+		return "", extraErr
+	}
+	if n != meta.Bytes || more != 0 {
 		return "", fmt.Errorf("shuffle size mismatch: %d != %d", n, meta.Bytes)
 	}
 	if err = f.Close(); err != nil {

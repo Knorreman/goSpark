@@ -363,7 +363,9 @@ _ = err
 ```
 
 Use `JobSpec.Params` for explicit inputs/parameters and `ScheduleSave` for
-distributed output. `ScheduleContext` and `ScheduleSaveContext` accept a
+distributed output. `AddBroadcast` attaches a small gob-encoded lookup (8 MiB
+total) that every worker reads with `ReadBroadcast` inside the factory; it is
+not shuffled. `ScheduleContext` and `ScheduleSaveContext` accept a
 `context.Context` and retry options. Factories must build deterministic graphs
 on driver and workers; do not perform actions such as `Collect` while building
 them. Use `ctx.TaskContext()` for cancellable I/O in callbacks.
@@ -446,7 +448,7 @@ gaps are:
    large files inside multi-file datasets, and improve range balancing for
    skewed sort keys. Directories and S3 prefixes can already be read as text.
 5. **RDD API and execution compatibility:** Fill gaps in transformations,
-   actions, partitioner semantics, broadcast variables, and accumulators;
+   actions, partitioner semantics, and accumulators;
    define serialization and task-side-effect guarantees clearly. Cross-language
    or binary compatibility with Apache Spark is a separate undertaking.
 6. **Production observability and scale qualification:** Expose per-stage/task

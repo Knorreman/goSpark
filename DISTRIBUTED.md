@@ -13,6 +13,9 @@ incomplete bucket manifests, and invalid task partitions fail explicitly.
 Fingerprints describe the existing planner's stage structure and JobSpec;
 they do not hash Go function bodies or guarantee arbitrary closures are equal.
 Use identical application builds and deterministic factories on all workers.
+Named broadcasts travel in the job spec as gob bytes, up to 8 MiB combined.
+Their hashes are part of the plan fingerprint. Read them in the factory; do
+not treat them as shuffled data.
 
 SortByKey is lazy and executable by remote tasks. For multiple output
 partitions, workers first sample up to 64 keys per input partition (up to 4 KiB

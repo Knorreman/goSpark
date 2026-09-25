@@ -23,6 +23,7 @@ type ExecResult struct {
 	Kind        StageKind
 	Manifest    *MapOutputManifest
 	Records     []any
+	Output      *PartitionOutput
 }
 
 func ExecuteTask(task Task) (ExecResult, error) {
@@ -35,6 +36,9 @@ func ExecuteTaskContext(execution context.Context, task Task) (result ExecResult
 			if c, ok := v.(taskCanceled); ok {
 				result = ExecResult{}
 				taskErr = c.err
+			} else if e, ok := v.(executionError); ok {
+				result = ExecResult{}
+				taskErr = e.err
 			} else {
 				panic(v)
 			}
@@ -133,6 +137,13 @@ func ExecuteTaskContext(execution context.Context, task Task) (result ExecResult
 		}
 		return ExecResult{PartitionID: task.PartitionID, Kind: StageShuffleMap, Manifest: &man}, nil
 	case StageResult:
+		if task.Job.Action == ActionSave {
+			out, err := writeOutputPartition(execution, rdd, *stage, task)
+			if err != nil {
+				return ExecResult{}, err
+			}
+			return ExecResult{PartitionID: task.PartitionID, Kind: StageResult, Output: &out}, nil
+		}
 		recs, err := executeResult(ctx, rdd, *stage, task, store)
 		if err != nil {
 			return ExecResult{}, err
@@ -150,40 +161,10 @@ func executeShuffleMap(_ *Context, root RDDAny, stage Stage, task Task, jobID st
 	}
 	parent := dep.Parent()
 	part, ok := partitionByIndex(parent, task.PartitionID)
-	spills := make(map[int]*spillAcc, stage.NumReducers)
-	for i := 0; i < stage.NumReducers; i++ {
-		spills[i] = &spillAcc{}
+	if !ok {
+		return MapOutputManifest{}, fmt.Errorf("partition not found")
 	}
-	spillDir := filepath.Join(task.StoreDir, "_spill", jobID, fmt.Sprintf("s%d-m%d-a%d", stage.ShuffleID, task.PartitionID, task.Attempt))
-	defer os.RemoveAll(spillDir)
-	codec := store.codec
-	if ok {
-		iter := parent.ComputeAny(part)
-		partitioner := dep.GetPartitioner()
-		for {
-			item, more := iter()
-			if !more {
-				break
-			}
-			key := dep.ExtractKey(item)
-			rid := 0
-			if key != nil && partitioner != nil {
-				rid = partitioner.GetPartition(key)
-			}
-			if err := spills[rid].add(item, spillDir, codec); err != nil {
-				return MapOutputManifest{}, err
-			}
-		}
-	}
-	buckets := make(map[int][]any, stage.NumReducers)
-	for rid, acc := range spills {
-		recs, err := acc.collect(codec)
-		if err != nil {
-			return MapOutputManifest{}, err
-		}
-		buckets[rid] = combineMapOutput(recs, dep)
-	}
-	manifest, err := store.WriteMap(jobID, stage.ShuffleID, task.PartitionID, task.Attempt, stage.NumReducers, buckets)
+	manifest, err := writeStreamMap(root.Ctx(), store, dep, part, jobID, task.PartitionID, task.Attempt)
 	if err == nil {
 		if canceled := root.Ctx().TaskContext().Err(); canceled != nil {
 			_ = os.RemoveAll(manifest.Location)
@@ -226,17 +207,20 @@ func installUpstream(ctx *Context, stage Stage, task Task, store *DiskShuffleSto
 		if len(maps) == 0 {
 			return fmt.Errorf("missing map outputs for shuffle %d", shuffleID)
 		}
-		ctx.ShuffleManager().RegisterShuffle(shuffleID)
+		manager, ok := ctx.ShuffleManager().(*fileShuffleManager)
+		if !ok {
+			return fmt.Errorf("task requires file-backed shuffle manager")
+		}
 		for _, m := range maps {
-			buckets := make(map[int][]any)
+			paths := make(map[int]string)
 			for _, bucket := range m.Buckets {
-				recs, err := readUpstreamBucketContext(ctx.TaskContext(), store, m, bucket.ReduceID)
+				file, err := cacheShuffleBucket(ctx, store, m, bucket)
 				if err != nil {
 					return &FetchError{JobID: m.JobID, ShuffleID: m.ShuffleID, MapID: m.MapID, Attempt: m.Attempt, Reason: err.Error()}
 				}
-				buckets[bucket.ReduceID] = recs
+				paths[bucket.ReduceID] = file
 			}
-			ctx.ShuffleManager().WriteMapOutput(shuffleID, m.MapID, buckets)
+			manager.install(shuffleID, m.MapID, paths)
 		}
 	}
 	return nil

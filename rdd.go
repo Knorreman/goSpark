@@ -39,6 +39,8 @@ func NewRDD[T any](
 	computeFn func(partition Partition) Iterator[T],
 	opts ...RDDOpt[T],
 ) *RDD[T] {
+	var zero T
+	registerRecord(zero)
 	r := &RDD[T]{
 		id:             ctx.nextRDDID(),
 		ctx:            ctx,

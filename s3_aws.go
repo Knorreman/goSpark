@@ -27,6 +27,22 @@ func newAWSS3Store(bucket string, cfg S3Config) (*awsS3Store, error) {
 	return &awsS3Store{bucket: bucket, client: client}, nil
 }
 
+// CreateS3Bucket is primarily useful when bootstrapping a new S3-compatible
+// test store. Production buckets are normally provisioned outside goSpark.
+func CreateS3Bucket(bucket string) error {
+	if bucket == "" {
+		return fmt.Errorf("bucket is required")
+	}
+	client, err := newS3Client(currentS3Config())
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err = client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)})
+	return err
+}
+
 func newS3Client(cfg S3Config) (*s3.Client, error) {
 	region := cfg.Region
 	if region == "" {
@@ -72,6 +88,16 @@ func (s *awsS3Store) Put(key string, data []byte) error {
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 		Body:   bytes.NewReader(data),
+	})
+	return err
+}
+
+func (s *awsS3Store) PutIfAbsent(key string, data []byte) error {
+	ctx, cancel := s.ctx()
+	defer cancel()
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.bucket), Key: aws.String(key),
+		Body: bytes.NewReader(data), IfNoneMatch: aws.String("*"),
 	})
 	return err
 }

@@ -4,18 +4,36 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
+	"reflect"
 	"sync"
 )
 
 func init() {
-	gob.Register(Pair[string, int]{})
-	gob.Register(Pair[string, []int]{})
-	gob.Register(Pair[int, int]{})
-	gob.Register(Pair[int, string]{})
-	gob.Register(Pair[string, string]{})
-	gob.Register(Pair[int, Pair[string, int]]{})
-	gob.Register(int(0))
-	gob.Register("")
+	registerRecord(Pair[string, int]{})
+	registerRecord(Pair[string, []int]{})
+	registerRecord(Pair[int, int]{})
+	registerRecord(Pair[int, string]{})
+	registerRecord(Pair[string, string]{})
+	registerRecord(Pair[int, Pair[string, int]]{})
+	registerRecord(int(0))
+	registerRecord("")
+}
+
+var recordTypes = map[reflect.Type]bool{}
+var recordTypesMu sync.Mutex
+
+func registerRecord(v any) {
+	if v == nil {
+		return
+	}
+	t := reflect.TypeOf(v)
+	recordTypesMu.Lock()
+	defer recordTypesMu.Unlock()
+	if recordTypes[t] {
+		return
+	}
+	gob.Register(v)
+	recordTypes[t] = true
 }
 
 type RecordCodec interface {

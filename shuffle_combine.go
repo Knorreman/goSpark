@@ -14,9 +14,6 @@ func combineMapOutput(items []any, dep *ShuffleDep) []any {
 	slots := make(map[any]*slot)
 	for _, item := range items {
 		key := dep.ExtractKey(item)
-		if key == nil {
-			continue
-		}
 		val := pairValue(item)
 		s, ok := slots[key]
 		if !ok {

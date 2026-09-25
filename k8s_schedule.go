@@ -88,6 +88,16 @@ func K8sFailureTestDriverManifest(namespace, image, taskName string, partitions,
 }
 
 func k8sDriverManifest(namespace, image, taskName string, partitions, replicas, pauseSeconds int) string {
+	return k8sDriverManifestWithSave(namespace, image, taskName, partitions, replicas, pauseSeconds, "", "")
+}
+
+// K8sSaveDriverManifest submits an output action; s3Secret names an optional
+// Secret containing AWS_* settings for the driver (and separately for workers).
+func K8sSaveDriverManifest(namespace, image, taskName, outputPath, s3Secret string, partitions, replicas int) string {
+	return k8sDriverManifestWithSave(namespace, image, taskName, partitions, replicas, 0, outputPath, s3Secret)
+}
+
+func k8sDriverManifestWithSave(namespace, image, taskName string, partitions, replicas, pauseSeconds int, outputPath, s3Secret string) string {
 	if namespace == "" {
 		namespace = "default"
 	}
@@ -100,6 +110,12 @@ func k8sDriverManifest(namespace, image, taskName string, partitions, replicas, 
 	testEnv := ""
 	if pauseSeconds > 0 {
 		testEnv = fmt.Sprintf("        - name: GOSPARK_TEST_PAUSE_AFTER_MAP\n          value: %q\n", fmt.Sprint(pauseSeconds))
+	}
+	if outputPath != "" {
+		testEnv += fmt.Sprintf("        - name: GOSPARK_ACTION\n          value: save\n        - name: GOSPARK_OUTPUT\n          value: %q\n", outputPath)
+	}
+	if s3Secret != "" {
+		testEnv += fmt.Sprintf("        envFrom:\n        - secretRef:\n            name: %s\n", s3Secret)
 	}
 	return fmt.Sprintf(`
 apiVersion: batch/v1

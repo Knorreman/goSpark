@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -66,6 +70,24 @@ func main() {
 		runServe()
 	case "schedule":
 		runSchedule()
+	case "create-bucket":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "bucket name required")
+			os.Exit(1)
+		}
+		if err := spark.CreateS3Bucket(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case "verify-output":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "output path required")
+			os.Exit(1)
+		}
+		if err := runVerifyOutput(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "print-k8s":
 		runPrintK8s()
 	default:
@@ -408,11 +430,23 @@ func runSchedule() {
 			return nil
 		}
 	}
-	recs, err := spark.ScheduleWith(spark.JobSpec{
-		TaskName:      taskName,
-		Action:        spark.ActionCollect,
-		NumPartitions: np,
-	}, runners, opts)
+	action := os.Getenv("GOSPARK_ACTION")
+	if action == "" {
+		action = spark.ActionCollect
+	}
+	spec := spark.JobSpec{TaskName: taskName, Action: action, NumPartitions: np}
+	if action == spark.ActionSave {
+		spec.Params = map[string]string{"path": os.Getenv("GOSPARK_OUTPUT")}
+		manifest, err := spark.ScheduleSaveContext(context.Background(), spec, runners, opts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "save failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("OUTPUT_COMMITTED job=%s parts=%d path=%s\n", manifest.JobID, len(manifest.Partitions), spec.Params["path"])
+		fmt.Println("Schedule PASSED!")
+		return
+	}
+	recs, err := spark.ScheduleWith(spec, runners, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "schedule failed: %v\n", err)
 		os.Exit(1)
@@ -431,6 +465,36 @@ func waitWorkersTimeout() time.Duration {
 		}
 	}
 	return 2 * time.Minute
+}
+
+func runVerifyOutput(path string) error {
+	m, err := spark.ReadCommittedOutput(path)
+	if err != nil {
+		return err
+	}
+	fs := spark.ResolvePath(path).FS
+	for _, p := range m.Partitions {
+		r, err := fs.Open(p.Key)
+		if err != nil {
+			return err
+		}
+		content, readErr := io.ReadAll(r)
+		closeErr := r.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		sum := sha256.Sum256(content)
+		if int64(len(content)) != p.Bytes || hex.EncodeToString(sum[:]) != p.SHA256 {
+			return fmt.Errorf("corrupt partition %d", p.PartitionID)
+		}
+		fmt.Printf("PARTITION index=%d attempt=%d\n", p.PartitionID, p.Attempt)
+		fmt.Print(string(content))
+	}
+	fmt.Printf("OUTPUT_VERIFIED parts=%d job=%s\n", len(m.Partitions), m.JobID)
+	return nil
 }
 
 func runPrintK8s() {
@@ -454,7 +518,9 @@ func runPrintK8s() {
 	case "exec":
 		fmt.Print(spark.K8sExecutorManifest(ns, image, 2))
 	case "driver":
-		if secs, _ := strconv.Atoi(os.Getenv("GOSPARK_TEST_PAUSE_AFTER_MAP")); secs > 0 {
+		if output := os.Getenv("GOSPARK_OUTPUT"); output != "" {
+			fmt.Print(spark.K8sSaveDriverManifest(ns, image, task, output, os.Getenv("GOSPARK_S3_SECRET"), 2, 2))
+		} else if secs, _ := strconv.Atoi(os.Getenv("GOSPARK_TEST_PAUSE_AFTER_MAP")); secs > 0 {
 			fmt.Print(spark.K8sFailureTestDriverManifest(ns, image, task, 2, 2, secs))
 		} else {
 			fmt.Print(spark.K8sDriverManifest(ns, image, task, 2, 2))

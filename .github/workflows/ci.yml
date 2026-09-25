@@ -9,6 +9,31 @@ permissions:
   contents: read
 
 jobs:
+  memory-limit:
+    name: Sort and skewed aggregation exceed RAM (128 MiB executor)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+      - name: Build static memory-test binary
+        run: CGO_ENABLED=0 go test -c -o /tmp/gospark-memory.test .
+      - name: Process 320 MiB under a hard 128 MiB memory limit
+        run: |
+          mkdir -p "$RUNNER_TEMP/gospark-scratch"
+          docker run --name gospark-memory --memory=128m --memory-swap=128m \
+            -e GOMEMLIMIT=64MiB -e GOSPARK_MEMORY_STRESS=1 \
+            -v /tmp/gospark-memory.test:/bench:ro \
+            -v "$RUNNER_TEMP/gospark-scratch:/tmp" \
+            alpine:3.19 /bench -test.run '^TestBoundedLargeInput$' -test.v -test.timeout=15m
+      - name: Memory container diagnostics and cleanup
+        if: always()
+        run: |
+          docker inspect --format '{{json .State}}' gospark-memory || true
+          docker rm -f gospark-memory || true
   build-test:
     name: Build and Test (Go ${{ matrix.go }})
     runs-on: ubuntu-latest
@@ -82,3 +107,32 @@ jobs:
 
       - name: Run wordcount in container
         run: docker run --rm gospark/worker:ci wordcount
+
+  s3-commit:
+    name: MinIO distributed output commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+      - name: Start MinIO
+        run: |
+          docker build -f ci/Minio.Dockerfile -t gospark/minio:test .
+          docker run -d --name gospark-minio -p 127.0.0.1:19000:9000 \
+            -e MINIO_ROOT_USER=gosparktest -e MINIO_ROOT_PASSWORD=gosparktest-secret \
+            gospark/minio:test server /data --address :9000
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:19000/minio/health/live; then exit 0; fi
+            sleep 1
+          done
+          docker logs gospark-minio
+          exit 1
+      - name: Test real S3-compatible commits and retries
+        env:
+          GOSPARK_TEST_S3_ENDPOINT: http://127.0.0.1:19000
+        run: go test -race -count=1 -timeout 180s -run '^TestMinIO' .
+      - name: Stop MinIO
+        if: always()
+        run: docker rm -f gospark-minio || true

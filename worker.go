@@ -11,8 +11,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,6 +31,10 @@ type execTaskResponse struct {
 	FetchError  *FetchError        `json:"fetch_error,omitempty"`
 }
 
+var jobIDPattern = regexp.MustCompile(`^job-[0-9a-f]{32}$`)
+
+func validJobID(id string) bool { return jobIDPattern.MatchString(id) }
+
 func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -41,6 +47,8 @@ func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
 		baseURL = "http://" + host
 	}
 	mux := http.NewServeMux()
+	var activeMu sync.Mutex
+	active := map[string]int{}
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
@@ -59,6 +67,17 @@ func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		activeMu.Lock()
+		active[task.JobID]++
+		activeMu.Unlock()
+		defer func() {
+			activeMu.Lock()
+			active[task.JobID]--
+			if active[task.JobID] == 0 {
+				delete(active, task.JobID)
+			}
+			activeMu.Unlock()
+		}()
 		task.StoreDir = storeDir
 		res, err := ExecuteTaskContext(r.Context(), task)
 		if r.Context().Err() != nil {
@@ -97,6 +116,26 @@ func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(out)
+	})
+	mux.HandleFunc("/cleanup/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		jobID := strings.TrimPrefix(r.URL.Path, "/cleanup/")
+		if !validJobID(jobID) {
+			http.Error(w, "invalid job ID", http.StatusBadRequest)
+			return
+		}
+		activeMu.Lock()
+		defer activeMu.Unlock()
+		if active[jobID] != 0 {
+			http.Error(w, "job has active tasks", http.StatusConflict)
+			return
+		}
+		if err := os.RemoveAll(NewDiskShuffleStore(storeDir).jobDir(jobID)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 	})
 	mux.HandleFunc("/shuffle/", func(w http.ResponseWriter, r *http.Request) {
 		rel := strings.TrimPrefix(r.URL.Path, "/shuffle/")
@@ -142,6 +181,35 @@ type WorkerClient struct {
 	// Timeout bounds each RPC, including shuffle fetch and computation on the worker.
 	Timeout           time.Duration
 	HeartbeatInterval time.Duration
+}
+
+func (c *WorkerClient) CleanupJobContext(ctx context.Context, jobID string) error {
+	if !validJobID(jobID) {
+		return fmt.Errorf("invalid job ID")
+	}
+	url := strings.TrimRight(c.BaseURL, "/") + "/cleanup/" + jobID
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return nil
+		}
+		if resp.StatusCode != http.StatusConflict {
+			return fmt.Errorf("cleanup returned HTTP %d", resp.StatusCode)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 func (c *WorkerClient) Alive() bool {

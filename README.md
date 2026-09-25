@@ -377,6 +377,7 @@ arbitrary `JobSpec.Params` requires your own Go driver.
 | `GOSPARK_LISTEN` | `serve` | `127.0.0.1:0`; generated pods use `0.0.0.0:8080` |
 | `GOSPARK_ADVERTISE_URL` | `serve` | Reachable shuffle URL; generated pods use their StatefulSet DNS name |
 | `GOSPARK_STORE` | `serve` | OS temp directory + `/gospark-shuffle` |
+| `GOSPARK_SHUFFLE_MAP_MAX_BYTES` | shuffle-map executors | Optional positive byte cap per map attempt; unset means no cap |
 | `GOSPARK_TASK` | `schedule`, manifest generation | Registered job name; default `k8s-wc` |
 | `GOSPARK_WORKERS` | `schedule` | Required comma-separated executor HTTP URLs |
 | `GOSPARK_PARTITIONS` | `schedule` | `2`; `print-k8s` currently generates a fixed value of `2` |
@@ -426,9 +427,10 @@ gaps are:
    Current recovery handles executor/shuffle loss while the driver remains alive.
 3. **Distributed cache and shuffle lifecycle:** Track cached partition locations,
    reuse them across tasks, recompute only missing partitions, and manage shuffle
-   retention, disk quotas, spill cleanup, and backpressure. Tasks fetch only
-   needed shuffle buckets, but cached data and shuffle files still live on
-   individual executors' local storage.
+   retention, worker-wide disk quotas, orphan cleanup after driver crashes,
+   and backpressure. Tasks fetch only needed shuffle buckets and successful
+   drivers request job-scoped cleanup on completion or failure, but cached data
+   and shuffle files still live on individual executors' local storage.
 4. **Scalable partitioned I/O and sorting:** Split large input files across
    workers, support partitioned datasets and common storage formats, and use
    range partitioning for `SortByKey`. The current text reader handles a single

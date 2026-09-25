@@ -23,7 +23,7 @@ func TestResultFetchesOnlyRequiredBuckets(t *testing.T) {
 			// Materialize each stage on disk with the normal scheduler, then
 			// replay the result tasks against an instrumented shuffle server.
 			var manifests []MapOutputManifest
-			_, err = ScheduleWith(spec, []TaskRunner{localRunner{storeDir: t.TempDir()}}, ScheduleOpts{
+			_, err = ScheduleWith(spec, []TaskRunner{retainedShuffleRunner{localRunner{storeDir: t.TempDir()}}}, ScheduleOpts{
 				OnTaskComplete: func(_ Task, r ExecResult) error {
 					if r.Manifest != nil {
 						manifests = append(manifests, *r.Manifest)
@@ -110,6 +110,12 @@ func TestResultFetchesOnlyRequiredBuckets(t *testing.T) {
 		})
 	}
 }
+
+// This inspection test needs published shuffle blocks after Schedule returns;
+// normal runners release them at job completion.
+type retainedShuffleRunner struct{ inner TaskRunner }
+
+func (r retainedShuffleRunner) Exec(task Task) (ExecResult, error) { return r.inner.Exec(task) }
 
 func TestRequiredShuffleBucketsFollowsNarrowMapping(t *testing.T) {
 	ctx := NewContext(&Config{AppName: "mapping", NumPartitions: 3})

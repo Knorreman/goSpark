@@ -98,6 +98,11 @@ The joins example demonstrates inner/left joins, cogroup, set operations,
 Cartesian products, and zip. The text-file example creates its own temporary
 input and output. More examples are in [`examples/`](examples/).
 
+`FullOuterJoin(left, right, partitioner)` yields `Pair[*V, *W]`: nil marks an
+absent side, and shared keys produce every combination. `SubtractByKey(left,
+right, partitioner)` keeps every left record whose key does not occur on the
+right, including duplicate left values.
+
 ### A complete wordcount application
 
 ```go

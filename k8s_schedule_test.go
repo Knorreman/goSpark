@@ -24,6 +24,28 @@ func TestK8sExecutorManifest(t *testing.T) {
 	}
 }
 
+func TestK8sExecutorManifestWithData(t *testing.T) {
+	m := K8sExecutorManifestWithData("gospark", "gospark/worker:latest", 2, []K8sMount{{
+		Name: "text", ConfigMap: "gospark-text", Path: "/data/text",
+	}})
+	for _, want := range []string{"mountPath: /data/text", "name: gospark-text", "volumeMounts:"} {
+		if !strings.Contains(m, want) {
+			t.Errorf("data manifest missing %q", want)
+		}
+	}
+}
+
+func TestK8sDriverManifestMountsInput(t *testing.T) {
+	m := K8sDriverManifestWithInput("gospark", "gospark/worker:latest", "k8s-text", "/data/text", 2, 2, []K8sMount{{
+		Name: "text", ConfigMap: "gospark-text", Path: "/data/text",
+	}})
+	for _, want := range []string{"value: \"/data/text\"", "mountPath: /data/text", "name: gospark-text"} {
+		if !strings.Contains(m, want) {
+			t.Errorf("driver manifest missing %q\n%s", want, m)
+		}
+	}
+}
+
 func TestK8sDriverManifest(t *testing.T) {
 	m := K8sDriverManifest("gospark", "gospark/worker:latest", "k8s-wc", 2, 2)
 	for _, want := range []string{

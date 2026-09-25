@@ -498,6 +498,7 @@ go vet ./...
 
 # Disposable kind integration environment:
 ./k8s/two-pod.sh
+./k8s/features.sh      # broadcast, multi-file text, sort, logistic, linear
 ./k8s/recovery.sh       # deliberately deletes an executor
 ./k8s/minio-output.sh  # MinIO commits and injected save retries
 ```

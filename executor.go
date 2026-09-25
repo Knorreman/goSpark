@@ -126,7 +126,15 @@ func ExecuteTaskContext(execution context.Context, task Task) (result ExecResult
 			return ExecResult{}, fmt.Errorf("missing outputs for shuffle %d: got %d want %d", parent.ShuffleID, len(seen), parent.NumPartitions)
 		}
 	}
-	if err := installUpstream(ctx, *stage, task, store); err != nil {
+	stageRoot := rdd
+	if stage.Kind == StageShuffleMap {
+		dep := findShuffleDep(rdd, stage.ShuffleID)
+		if dep == nil {
+			return ExecResult{}, fmt.Errorf("shuffle %d not found", stage.ShuffleID)
+		}
+		stageRoot = dep.Parent()
+	}
+	if err := installUpstream(ctx, *stage, task, store, requiredShuffleBuckets(stageRoot, task.PartitionID)); err != nil {
 		return ExecResult{}, err
 	}
 	switch stage.Kind {
@@ -195,7 +203,54 @@ func executeResult(ctx *Context, root RDDAny, stage Stage, task Task, store *Dis
 	return recs, nil
 }
 
-func installUpstream(ctx *Context, stage Stage, task Task, store *DiskShuffleStore) error {
+// requiredShuffleBuckets walks narrow dependencies from the task's partition
+// until it reaches a shuffle boundary. At a boundary, the current partition
+// selects the reducer bucket, except for single-bucket global shuffles.
+func requiredShuffleBuckets(root RDDAny, partition int) map[int]map[int]bool {
+	type visit struct{ rdd, partition int }
+	seen := map[visit]bool{}
+	want := map[int]map[int]bool{}
+	var walk func(RDDAny, int)
+	walk = func(rdd RDDAny, pid int) {
+		v := visit{rdd.ID(), pid}
+		if seen[v] {
+			return
+		}
+		seen[v] = true
+		for _, dep := range rdd.Dependencies() {
+			if dep == nil || dep.Parent() == nil {
+				continue
+			}
+			if dep.DepType() == DepShuffle {
+				sh, ok := dep.(*ShuffleDep)
+				if !ok || sh.GetPartitioner() == nil {
+					continue
+				}
+				n := sh.GetPartitioner().NumPartitions()
+				if want[sh.ShuffleID()] == nil {
+					want[sh.ShuffleID()] = map[int]bool{}
+				}
+				if n == 1 {
+					want[sh.ShuffleID()][0] = true
+				} else if pid >= 0 && pid < n {
+					want[sh.ShuffleID()][pid] = true
+				} else {
+					for rid := 0; rid < n; rid++ {
+						want[sh.ShuffleID()][rid] = true
+					}
+				}
+				continue
+			}
+			for _, parent := range dep.GetParents(pid) {
+				walk(dep.Parent(), parent)
+			}
+		}
+	}
+	walk(root, partition)
+	return want
+}
+
+func installUpstream(ctx *Context, stage Stage, task Task, store *DiskShuffleStore, required map[int]map[int]bool) error {
 	if len(stage.Parents) == 0 {
 		return nil
 	}
@@ -207,6 +262,7 @@ func installUpstream(ctx *Context, stage Stage, task Task, store *DiskShuffleSto
 		if len(maps) == 0 {
 			return fmt.Errorf("missing map outputs for shuffle %d", shuffleID)
 		}
+		needed, mapped := required[shuffleID]
 		manager, ok := ctx.ShuffleManager().(*fileShuffleManager)
 		if !ok {
 			return fmt.Errorf("task requires file-backed shuffle manager")
@@ -214,6 +270,9 @@ func installUpstream(ctx *Context, stage Stage, task Task, store *DiskShuffleSto
 		for _, m := range maps {
 			paths := make(map[int]string)
 			for _, bucket := range m.Buckets {
+				if mapped && !needed[bucket.ReduceID] {
+					continue
+				}
 				file, err := cacheShuffleBucket(ctx, store, m, bucket)
 				if err != nil {
 					return &FetchError{JobID: m.JobID, ShuffleID: m.ShuffleID, MapID: m.MapID, Attempt: m.Attempt, Reason: err.Error()}

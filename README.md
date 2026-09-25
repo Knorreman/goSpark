@@ -426,8 +426,9 @@ gaps are:
    Current recovery handles executor/shuffle loss while the driver remains alive.
 3. **Distributed cache and shuffle lifecycle:** Track cached partition locations,
    reuse them across tasks, recompute only missing partitions, and manage shuffle
-   retention, disk quotas, spill cleanup, and backpressure. Cached data and
-   shuffle files currently live on individual executors' local storage.
+   retention, disk quotas, spill cleanup, and backpressure. Tasks fetch only
+   needed shuffle buckets, but cached data and shuffle files still live on
+   individual executors' local storage.
 4. **Scalable partitioned I/O and sorting:** Split large input files across
    workers, support partitioned datasets and common storage formats, and use
    range partitioning for `SortByKey`. The current text reader handles a single

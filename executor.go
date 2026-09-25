@@ -23,14 +23,15 @@ type Task struct {
 }
 
 type ExecResult struct {
-	PartitionID int
-	Kind        StageKind
-	Manifest    *MapOutputManifest
-	Records     []any
-	Output      *PartitionOutput
-	Cached      []CachePartition
-	Dropped     []CachePartition
-	Samples     []any
+	PartitionID  int
+	Kind         StageKind
+	Manifest     *MapOutputManifest
+	Records      []any
+	Output       *PartitionOutput
+	Cached       []CachePartition
+	Dropped      []CachePartition
+	Samples      []any
+	Accumulators map[string]accumulatorValue
 }
 
 func ExecuteTask(task Task) (ExecResult, error) {
@@ -92,6 +93,7 @@ func ExecuteTaskContext(execution context.Context, task Task) (result ExecResult
 		NumPartitions: task.Job.NumPartitions,
 	})
 	defer ctx.Stop()
+	ctx.prepareAccumulators(task.Job)
 	ctx.distributedCache = task.jobCache
 	if task.budget != nil {
 		ctx.disk.clear()
@@ -225,6 +227,7 @@ func ExecuteTaskContext(execution context.Context, task Task) (result ExecResult
 
 func withCacheUpdates(ctx *Context, res ExecResult) ExecResult {
 	res.Cached, res.Dropped = ctx.cacheUpdates()
+	res.Accumulators = ctx.accumulatorUpdates()
 	return res
 }
 

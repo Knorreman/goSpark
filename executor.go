@@ -200,6 +200,18 @@ func ExecuteTaskContext(execution context.Context, task Task) (result ExecResult
 			}
 			return withCacheUpdates(ctx, ExecResult{PartitionID: task.PartitionID, Kind: StageResult, Output: &out}), nil
 		}
+		if action, ok := getTreeAction(task.Job.Action); ok {
+			part, found := partitionByIndex(rdd, task.PartitionID)
+			if !found {
+				return ExecResult{}, fmt.Errorf("result partition %d not found", task.PartitionID)
+			}
+			partial, valid := action.partial(rdd.ComputeAny(part))
+			res := ExecResult{PartitionID: task.PartitionID, Kind: StageResult}
+			if valid {
+				res.Records = []any{partial}
+			}
+			return withCacheUpdates(ctx, res), nil
+		}
 		recs, err := executeResult(ctx, rdd, *stage, task, store)
 		if err != nil {
 			return ExecResult{}, err

@@ -137,6 +137,9 @@ func main() {
 Results are `hello: 3`, `world: 2`, and `spark: 2`; key order is unspecified.
 Use `spark.TextFile(ctx, "input.txt", 2)` instead of `Parallelize` for a local
 text file. `Collect` brings the whole result into the caller's memory.
+`TreeAggregate(rdd, zero, seqOp, combOp)` and `TreeReduce(rdd, fn)` fold
+within partitions before merging partials; `TreeReduce` returns `(value, false)`
+for empty input. Mutable zero values are copied for each partition.
 
 ### Run the bundled worker in a container
 
@@ -361,6 +364,13 @@ records, err := spark.Schedule(spark.JobSpec{
 _ = records
 _ = err
 ```
+
+For a bounded aggregate result, register `RegisterTreeAggregate[T, U](action,
+zero, seqOp, combOp)` or `RegisterTreeReduce[T](action, fn)` in both the driver
+and worker program, then use that name as `JobSpec.Action` with `Schedule`.
+Workers send at most one partial per result partition; `Schedule` returns one
+merged record (or none for an empty tree reduction). The zero must be an
+identity for `combOp`; use associative operations for predictable results.
 
 Use `JobSpec.Params` for explicit inputs/parameters and `ScheduleSave` for
 distributed output. `AddBroadcast` attaches a small gob-encoded lookup (8 MiB

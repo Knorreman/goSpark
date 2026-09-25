@@ -1,5 +1,34 @@
 package spark
 
+import "fmt"
+
+// Lookup returns values for key. A partitioned RDD reads only the key's
+// partition; an unpartitioned RDD scans all partitions.
+func Lookup[K comparable, V any](rdd *RDD[Pair[K, V]], key K) []V {
+	computeShuffleStages(rdd)
+	parts := rdd.Partitions()
+	if len(parts) == 0 {
+		return nil
+	}
+	if p := rdd.GetPartitioner(); p != nil {
+		idx := p.GetPartition(key)
+		if idx < 0 || idx >= len(parts) {
+			panic(fmt.Sprintf("Lookup: partition %d outside %d partitions", idx, len(parts)))
+		}
+		parts = parts[idx : idx+1]
+	}
+	var values []V
+	for _, part := range parts {
+		iter := rdd.Compute(part)
+		for pair, ok := iter(); ok; pair, ok = iter() {
+			if pair.Key == key {
+				values = append(values, pair.Value)
+			}
+		}
+	}
+	return values
+}
+
 func ReduceByKey[K comparable, V any](rdd *RDD[Pair[K, V]], partitioner Partitioner, fn func(V, V) V) *RDD[Pair[K, V]] {
 	return NewReduceByKeyRDD(rdd, partitioner, fn)
 }

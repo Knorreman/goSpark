@@ -125,6 +125,21 @@ func ForEach[T any](rdd *RDD[T], fn func(T)) {
 	wg.Wait()
 }
 
+// ForEachPartition calls fn once per partition, including empty partitions.
+// The callback consumes the partition iterator and its results are not returned.
+func ForEachPartition[T any](rdd *RDD[T], fn func(Iterator[T])) {
+	computeShuffleStages(rdd)
+	var wg sync.WaitGroup
+	for _, p := range rdd.Partitions() {
+		wg.Add(1)
+		go func(partition Partition) {
+			defer wg.Done()
+			fn(rdd.Compute(partition))
+		}(p)
+	}
+	wg.Wait()
+}
+
 func Take[T any](rdd *RDD[T], n int) []T {
 	computeShuffleStages(rdd)
 	result := make([]T, 0, n)

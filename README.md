@@ -138,6 +138,13 @@ Results are `hello: 3`, `world: 2`, and `spark: 2`; key order is unspecified.
 Use `spark.TextFile(ctx, "input.txt", 2)` instead of `Parallelize` for a local
 text file. `Collect` brings the whole result into the caller's memory.
 
+Partition operations: `Lookup(pairs, key)` reads the key's partition when one
+is set (otherwise scans); `ForEachPartition(rdd, fn)` runs an iterator callback
+once per partition without returning records. `ZipWithIndex(rdd)` numbers rows
+in partition order, starting at zero; it rereads preceding partitions to count
+them, so inputs should be deterministic. `ZipPartitions(rdds, fn)` passes the
+same-index iterators from any number of equal-partition-count RDDs to `fn`.
+
 ### Run the bundled worker in a container
 
 ```bash

@@ -30,6 +30,7 @@ DataFrames, streaming, and MLlib are outside the current scope.
 - [Read and write S3](#read-and-write-s3)
 - [Write your own distributed job](#write-your-own-distributed-job)
 - [Configuration](#configuration)
+- [Future work](#future-work)
 - [Tests and troubleshooting](#tests-and-troubleshooting)
 
 ## Install and build
@@ -409,6 +410,16 @@ multiple executors are available.
 
 For detailed execution, recovery, output, and memory semantics, see
 [`DISTRIBUTED.md`](DISTRIBUTED.md).
+
+## Future work
+
+- **Kubernetes custom resource (CRD) and controller:** Define jobs declaratively,
+  with an operator to create and monitor driver Jobs and executor pods, manage
+  retries and cleanup, and report job status through Kubernetes. Today you
+  deploy the generated manifests and submit Jobs yourself.
+- **MLlib-style machine learning:** Add distributed algorithms and reusable
+  feature-processing pipelines on top of the RDD engine. There is currently no
+  MLlib API or model-training framework.
 
 ## Tests and troubleshooting
 

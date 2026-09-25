@@ -15,6 +15,7 @@ DataFrames, streaming, and MLlib are outside the current scope.
 ## What you can do
 
 - Transform typed data with `Map`, `FlatMap`, `Filter`, and `MapPartitions`.
+- Checkpoint RDD partitions to a local filesystem directory to truncate lineage.
 - Aggregate, join, group, repartition, and sort keyed data.
 - Execute compiled jobs through a Kubernetes driver Job and executor StatefulSet.
 - Recover lost shuffle output and cancel stalled worker requests.
@@ -26,6 +27,7 @@ DataFrames, streaming, and MLlib are outside the current scope.
 
 - [Install and build](#install-and-build)
 - [Run locally](#run-locally)
+- [Checkpoint an RDD](#checkpoint-an-rdd)
 - [Deploy on Kubernetes](#deploy-on-kubernetes)
 - [Read and write S3](#read-and-write-s3)
 - [Write your own distributed job](#write-your-own-distributed-job)
@@ -152,6 +154,30 @@ once per partition without returning records. `ZipWithIndex(rdd)` numbers rows
 in partition order, starting at zero; it rereads preceding partitions to count
 them, so inputs should be deterministic. `ZipPartitions(rdds, fn)` passes the
 same-index iterators from any number of equal-partition-count RDDs to `fn`.
+
+### Checkpoint an RDD
+
+```go
+if err := ctx.SetCheckpointDir("/shared/gospark-checkpoints"); err != nil {
+	panic(err)
+}
+path, err := spark.Checkpoint(counts)
+if err != nil {
+	panic(err)
+}
+// Later actions on counts (and downstream RDDs) read the saved partitions.
+// Another context can reconstruct the RDD:
+saved, err := spark.ReadCheckpoint[spark.Pair[string, int]](ctx, path)
+```
+
+`Checkpoint` eagerly materializes every partition before switching the RDD to
+file-backed reads; call it between actions. Checkpoints survive `ctx.Stop()` and
+must be removed by the application when no longer needed. For distributed jobs,
+the checkpoint directory **must be on a filesystem shared by the driver and
+every worker at the same absolute path** (for example, a shared volume). Pass
+the returned path to the registered factory via `JobSpec.Params` and use
+`ReadCheckpoint` there, so driver and workers construct the same lineage-free
+graph. Container-local temporary files are not shared across workers.
 
 ### Run the bundled worker in a container
 

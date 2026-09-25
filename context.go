@@ -2,17 +2,21 @@ package spark
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 )
 
 type Context struct {
-	cleanups    []func()
-	execution   context.Context
-	conf        *Config
-	parallelism int
-	closed      atomic.Bool
-	mu          sync.Mutex
+	cleanups      []func()
+	execution     context.Context
+	conf          *Config
+	parallelism   int
+	checkpointDir string
+	closed        atomic.Bool
+	mu            sync.Mutex
 
 	shuffleManager   ShuffleManager
 	cache            *memoryCache
@@ -105,6 +109,31 @@ func (c *Context) checkCanceled() {
 }
 
 func (c *Context) DefaultParallelism() int { return c.parallelism }
+
+// SetCheckpointDir sets the local filesystem directory used for reliable RDD
+// checkpoints. In distributed jobs this path must be shared by all workers.
+func (c *Context) SetCheckpointDir(path string) error {
+	if path == "" {
+		return fmt.Errorf("checkpoint directory is empty")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(abs, 0755); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.checkpointDir = abs
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *Context) getCheckpointDir() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.checkpointDir
+}
 
 func (c *Context) Stop() {
 	c.closed.Store(true)

@@ -12,7 +12,7 @@ jobs:
   two-pod:
     name: Two-pod shuffle on kind
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       GOSPARK_NAMESPACE: gospark-two-pod
       GOSPARK_IMAGE: gospark/worker:latest
@@ -30,6 +30,9 @@ jobs:
 
       - name: Run two-pod distributed test
         run: ./k8s/two-pod.sh
+
+      - name: Broadcast, multi-file input, sort, and MLlib on kind
+        run: ./k8s/features.sh
 
       - name: Kill an executor after shuffle publication and verify recovery
         run: ./k8s/recovery.sh

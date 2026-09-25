@@ -7,13 +7,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	spark "goSpark"
-	_ "goSpark/mllib"
+	"goSpark/mllib"
 )
 
 func init() {
@@ -44,6 +45,36 @@ func init() {
 		words := spark.FlatMap(rdd, func(line string) []string { return strings.Fields(line) })
 		pairs := spark.Map(words, func(w string) spark.Pair[string, int] { return spark.NewPair(w, 1) })
 		return spark.ReduceByKey(pairs, spark.NewHashPartitioner(np), func(a, b int) int { return a + b }), nil
+	})
+	spark.RegisterJob("k8s-broadcast", func(ctx *spark.Context, spec spark.JobSpec) (spark.RDDAny, error) {
+		rates, err := spark.ReadBroadcast[map[string]int](spec, "rates")
+		if err != nil {
+			return nil, err
+		}
+		words := spark.Parallelize(ctx, []string{"a", "b", "missing"}, spec.NumPartitions)
+		return spark.Map(words, func(word string) spark.Pair[string, int] {
+			return spark.NewPair(word, rates[word])
+		}), nil
+	})
+	spark.RegisterJob("k8s-text", func(ctx *spark.Context, spec spark.JobSpec) (spark.RDDAny, error) {
+		np := spec.NumPartitions
+		if np <= 0 {
+			np = 2
+		}
+		lines := spark.TextFile(ctx, spec.Params["path"], np)
+		words := spark.FlatMap(lines, func(line string) []string { return strings.Fields(line) })
+		pairs := spark.Map(words, func(word string) spark.Pair[string, int] { return spark.NewPair(word, 1) })
+		return spark.ReduceByKey(pairs, spark.NewHashPartitioner(np), func(a, b int) int { return a + b }), nil
+	})
+	spark.RegisterJob("k8s-sort", func(ctx *spark.Context, spec spark.JobSpec) (spark.RDDAny, error) {
+		np := spec.NumPartitions
+		if np <= 0 {
+			np = 2
+		}
+		rows := spark.Parallelize(ctx, []spark.Pair[int, int]{
+			spark.NewPair(4, 1), spark.NewPair(1, 1), spark.NewPair(3, 1), spark.NewPair(2, 1),
+		}, np)
+		return spark.SortByKey(rows, func(a, b int) bool { return a < b }, true, np), nil
 	})
 }
 
@@ -436,6 +467,26 @@ func runSchedule() {
 		action = spark.ActionCollect
 	}
 	spec := spark.JobSpec{TaskName: taskName, Action: action, NumPartitions: np}
+	if input := os.Getenv("GOSPARK_INPUT"); input != "" {
+		if spec.Params == nil {
+			spec.Params = map[string]string{}
+		}
+		spec.Params["path"] = input
+	}
+	if taskName == "k8s-broadcast" {
+		if err := spark.AddBroadcast(&spec, "rates", map[string]int{"a": 3, "b": 5}); err != nil {
+			fmt.Fprintf(os.Stderr, "broadcast: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	if taskName == "k8s-logistic" || taskName == "k8s-linear" {
+		if err := runModelJob(taskName, os.Getenv("GOSPARK_INPUT"), runners, np); err != nil {
+			fmt.Fprintf(os.Stderr, "train failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Schedule PASSED!")
+		return
+	}
 	if action == spark.ActionSave {
 		spec.Params = map[string]string{"path": os.Getenv("GOSPARK_OUTPUT")}
 		manifest, err := spark.ScheduleSaveContext(context.Background(), spec, runners, opts)
@@ -456,7 +507,82 @@ func runSchedule() {
 	for _, rec := range recs {
 		fmt.Printf("  %#v\n", rec)
 	}
+	if err := checkScheduledResult(taskName, recs); err != nil {
+		fmt.Fprintf(os.Stderr, "result check failed: %v\n", err)
+		os.Exit(1)
+	}
 	fmt.Println("Schedule PASSED!")
+}
+
+func runModelJob(task, path string, runners []spark.TaskRunner, partitions int) error {
+	cfg := mllib.Config{FitIntercept: true, Iterations: 15, StepSize: 1}
+	switch task {
+	case "k8s-logistic":
+		model, err := mllib.TrainLogisticFiles(path, runners, partitions, mllib.Config{FitIntercept: true, Iterations: 20, StepSize: 1, RegParam: 0.01})
+		if err != nil {
+			return err
+		}
+		low, err := model.Predict([]float64{0})
+		if err != nil {
+			return err
+		}
+		high, err := model.Predict([]float64{12})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("LOGISTIC low=%g high=%g\n", low, high)
+		if low != 0 || high != 1 {
+			return fmt.Errorf("logistic classes low=%g high=%g", low, high)
+		}
+	case "k8s-linear":
+		model, err := mllib.TrainFiles(path, runners, partitions, cfg)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("LINEAR intercept=%g weight=%g\n", model.Intercept, model.Weights[0])
+		if math.Abs(model.Intercept-1) > 1e-2 || math.Abs(model.Weights[0]-2) > 1e-2 {
+			return fmt.Errorf("linear model intercept=%g weight=%g", model.Intercept, model.Weights[0])
+		}
+	default:
+		return fmt.Errorf("unknown model job %s", task)
+	}
+	return nil
+}
+
+func checkScheduledResult(task string, recs []any) error {
+	counts := map[string]int{}
+	var keys []int
+	for _, rec := range recs {
+		switch p := rec.(type) {
+		case spark.Pair[string, int]:
+			counts[p.Key] += p.Value
+		case spark.Pair[int, int]:
+			keys = append(keys, p.Key)
+		}
+	}
+	switch task {
+	case "k8s-broadcast":
+		if counts["a"] != 3 || counts["b"] != 5 || counts["missing"] != 0 {
+			return fmt.Errorf("broadcast counts %v", counts)
+		}
+		fmt.Printf("BROADCAST a=%d b=%d\n", counts["a"], counts["b"])
+	case "k8s-text":
+		if counts["hello"] != 2 || counts["world"] != 1 || counts["spark"] != 1 || counts["ignore"] != 0 {
+			return fmt.Errorf("text counts %v", counts)
+		}
+		fmt.Printf("TEXT hello=%d world=%d spark=%d\n", counts["hello"], counts["world"], counts["spark"])
+	case "k8s-sort":
+		for i := 1; i < len(keys); i++ {
+			if keys[i] < keys[i-1] {
+				return fmt.Errorf("unsorted keys %v", keys)
+			}
+		}
+		if fmt.Sprint(keys) != "[1 2 3 4]" {
+			return fmt.Errorf("sort keys %v", keys)
+		}
+		fmt.Printf("SORTED %v\n", keys)
+	}
+	return nil
 }
 
 func waitWorkersTimeout() time.Duration {
@@ -517,18 +643,37 @@ func runPrintK8s() {
 	}
 	switch part {
 	case "exec":
-		fmt.Print(spark.K8sExecutorManifest(ns, image, 2))
+		fmt.Print(executorManifest(ns, image))
 	case "driver":
 		if output := os.Getenv("GOSPARK_OUTPUT"); output != "" {
 			fmt.Print(spark.K8sSaveDriverManifest(ns, image, task, output, os.Getenv("GOSPARK_S3_SECRET"), 2, 2))
 		} else if secs, _ := strconv.Atoi(os.Getenv("GOSPARK_TEST_PAUSE_AFTER_MAP")); secs > 0 {
 			fmt.Print(spark.K8sFailureTestDriverManifest(ns, image, task, 2, 2, secs))
+		} else if input := os.Getenv("GOSPARK_INPUT"); input != "" {
+			fmt.Print(spark.K8sDriverManifestWithInput(ns, image, task, input, 2, 2))
 		} else {
 			fmt.Print(spark.K8sDriverManifest(ns, image, task, 2, 2))
 		}
 	default:
-		fmt.Print(spark.K8sExecutorManifest(ns, image, 2))
+		fmt.Print(executorManifest(ns, image))
 		fmt.Println("---")
 		fmt.Print(spark.K8sDriverManifest(ns, image, task, 2, 2))
 	}
+}
+
+func executorManifest(namespace, image string) string {
+	var mounts []spark.K8sMount
+	if cm := os.Getenv("GOSPARK_TEXT_CONFIGMAP"); cm != "" {
+		mounts = append(mounts, spark.K8sMount{Name: "text", ConfigMap: cm, Path: "/data/text"})
+	}
+	if cm := os.Getenv("GOSPARK_LOGISTIC_CONFIGMAP"); cm != "" {
+		mounts = append(mounts, spark.K8sMount{Name: "logistic", ConfigMap: cm, Path: "/data/logistic"})
+	}
+	if cm := os.Getenv("GOSPARK_LINEAR_CONFIGMAP"); cm != "" {
+		mounts = append(mounts, spark.K8sMount{Name: "linear", ConfigMap: cm, Path: "/data/linear"})
+	}
+	if len(mounts) == 0 {
+		return spark.K8sExecutorManifest(namespace, image, 2)
+	}
+	return spark.K8sExecutorManifestWithData(namespace, image, 2, mounts)
 }

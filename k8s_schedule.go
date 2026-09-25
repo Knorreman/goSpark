@@ -7,12 +7,38 @@ import (
 
 const WorkerListenPort = 8080
 
+// K8sMount attaches a ConfigMap as a directory of input files.
+type K8sMount struct {
+	Name      string
+	ConfigMap string
+	Path      string
+}
+
 func K8sExecutorManifest(namespace, image string, replicas int) string {
+	return k8sExecutorManifest(namespace, image, replicas, nil)
+}
+
+// K8sExecutorManifestWithData is the executor manifest plus input mounts.
+func K8sExecutorManifestWithData(namespace, image string, replicas int, mounts []K8sMount) string {
+	return k8sExecutorManifest(namespace, image, replicas, mounts)
+}
+
+func k8sExecutorManifest(namespace, image string, replicas int, mounts []K8sMount) string {
 	if namespace == "" {
 		namespace = "default"
 	}
 	if replicas <= 0 {
 		replicas = 2
+	}
+	volumeMounts := ""
+	volumes := ""
+	if len(mounts) > 0 {
+		volumeMounts = "        volumeMounts:\n"
+		volumes = "      volumes:\n"
+		for _, m := range mounts {
+			volumeMounts += fmt.Sprintf("        - name: %s\n          mountPath: %s\n", m.Name, m.Path)
+			volumes += fmt.Sprintf("      - name: %s\n        configMap:\n          name: %s\n", m.Name, m.ConfigMap)
+		}
 	}
 	return fmt.Sprintf(`
 apiVersion: v1
@@ -74,7 +100,9 @@ spec:
             port: worker
           initialDelaySeconds: 1
           periodSeconds: 2
-`, namespace, WorkerListenPort, WorkerListenPort, namespace, replicas, image, WorkerListenPort, WorkerListenPort, WorkerListenPort)
+%s
+%s
+`, namespace, WorkerListenPort, WorkerListenPort, namespace, replicas, image, WorkerListenPort, WorkerListenPort, WorkerListenPort, volumeMounts, volumes)
 }
 
 func K8sDriverManifest(namespace, image, taskName string, partitions, replicas int) string {
@@ -88,16 +116,25 @@ func K8sFailureTestDriverManifest(namespace, image, taskName string, partitions,
 }
 
 func k8sDriverManifest(namespace, image, taskName string, partitions, replicas, pauseSeconds int) string {
-	return k8sDriverManifestWithSave(namespace, image, taskName, partitions, replicas, pauseSeconds, "", "")
+	return k8sDriverManifestWithSave(namespace, image, taskName, partitions, replicas, pauseSeconds, "", "", "")
+}
+
+// K8sDriverManifestWithInput sets GOSPARK_INPUT for jobs that read a mounted path.
+func K8sDriverManifestWithInput(namespace, image, taskName, inputPath string, partitions, replicas int) string {
+	extra := ""
+	if inputPath != "" {
+		extra = fmt.Sprintf("        - name: GOSPARK_INPUT\n          value: %q\n", inputPath)
+	}
+	return k8sDriverManifestWithSave(namespace, image, taskName, partitions, replicas, 0, "", "", extra)
 }
 
 // K8sSaveDriverManifest submits an output action; s3Secret names an optional
 // Secret containing AWS_* settings for the driver (and separately for workers).
 func K8sSaveDriverManifest(namespace, image, taskName, outputPath, s3Secret string, partitions, replicas int) string {
-	return k8sDriverManifestWithSave(namespace, image, taskName, partitions, replicas, 0, outputPath, s3Secret)
+	return k8sDriverManifestWithSave(namespace, image, taskName, partitions, replicas, 0, outputPath, s3Secret, "")
 }
 
-func k8sDriverManifestWithSave(namespace, image, taskName string, partitions, replicas, pauseSeconds int, outputPath, s3Secret string) string {
+func k8sDriverManifestWithSave(namespace, image, taskName string, partitions, replicas, pauseSeconds int, outputPath, s3Secret, extraEnv string) string {
 	if namespace == "" {
 		namespace = "default"
 	}
@@ -117,6 +154,7 @@ func k8sDriverManifestWithSave(namespace, image, taskName string, partitions, re
 	if s3Secret != "" {
 		testEnv += fmt.Sprintf("        envFrom:\n        - secretRef:\n            name: %s\n", s3Secret)
 	}
+	testEnv += extraEnv
 	return fmt.Sprintf(`
 apiVersion: batch/v1
 kind: Job

@@ -373,6 +373,21 @@ them. Use `ctx.TaskContext()` for cancellable I/O in callbacks.
 The supplied `schedule` CLI accepts the built-in collect/save modes; passing
 arbitrary `JobSpec.Params` requires your own Go driver.
 
+## Linear regression
+
+The `goSpark/mllib` package fits ordinary least squares. Import it from the
+worker program as well as the driver so the training job is registered. The
+bundled worker image already does this.
+
+```go
+model, err := mllib.TrainFiles("s3://bucket/train/", workers, 4, mllib.DefaultConfig())
+prediction, err := model.Predict([]float64{1.5, -2})
+```
+
+Training text is one row per line: `label f1 f2 ...`. The fit sums normal
+equations per partition, so feature count is capped at 32 by default. This is
+not regularized regression, classification, or a general ML pipeline.
+
 ## Configuration
 
 ### Worker and driver environment
@@ -461,9 +476,9 @@ Additional directions:
   with an operator to create and monitor driver Jobs and executor pods, manage
   retries and cleanup, and report job status through Kubernetes. Today you
   deploy the generated manifests and submit Jobs yourself.
-- **MLlib-style machine learning:** Add distributed algorithms and reusable
-  feature-processing pipelines on top of the RDD engine. There is currently no
-  MLlib API or model-training framework.
+- **More MLlib algorithms:** Linear regression with ordinary least squares is
+  available in `goSpark/mllib`. Classification, regularization, and feature
+  pipelines are not implemented yet.
 
 ## Tests and troubleshooting
 

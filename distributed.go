@@ -19,14 +19,16 @@ const (
 type TaskFunc func(ctx *Context) RDDAny
 
 type JobSpec struct {
-	TaskName        string            `json:"task_name"`
-	Action          string            `json:"action,omitempty"`
-	Params          map[string]string `json:"params,omitempty"`
-	Broadcasts      []Broadcast       `json:"broadcasts,omitempty"`
-	InputSplits     []InputSplit      `json:"input_splits,omitempty"`
-	NumPartitions   int               `json:"num_partitions,omitempty"`
-	ProtocolVersion int               `json:"protocol_version"`
-	ImageDigest     string            `json:"image_digest,omitempty"`
+	TaskName           string            `json:"task_name"`
+	Action             string            `json:"action,omitempty"`
+	Params             map[string]string `json:"params,omitempty"`
+	Broadcasts         []Broadcast       `json:"broadcasts,omitempty"`
+	Accumulators       []AccumulatorDef  `json:"accumulators,omitempty"`
+	InputSplits        []InputSplit      `json:"input_splits,omitempty"`
+	NumPartitions      int               `json:"num_partitions,omitempty"`
+	ProtocolVersion    int               `json:"protocol_version"`
+	ImageDigest        string            `json:"image_digest,omitempty"`
+	accumulatorContext *Context
 }
 
 func (s JobSpec) withDefaults() JobSpec {

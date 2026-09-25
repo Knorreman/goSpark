@@ -18,6 +18,7 @@ DataFrames, streaming, and MLlib are outside the current scope.
 - Use `RandomSplit(rdd, weights, seed)` for reproducible, disjoint weighted splits;
   `Pipe(rdd, command)` runs a shell command per partition, sending records as
   stdin lines and returning stdout lines (the command must be available on workers).
+- Checkpoint RDD partitions to a local filesystem directory to truncate lineage.
 - Aggregate, join, group, repartition, and sort keyed data.
 - Execute compiled jobs through a Kubernetes driver Job and executor StatefulSet.
 - Recover lost shuffle output and cancel stalled worker requests.
@@ -29,6 +30,7 @@ DataFrames, streaming, and MLlib are outside the current scope.
 
 - [Install and build](#install-and-build)
 - [Run locally](#run-locally)
+- [Checkpoint an RDD](#checkpoint-an-rdd)
 - [Deploy on Kubernetes](#deploy-on-kubernetes)
 - [Read and write S3](#read-and-write-s3)
 - [Write your own distributed job](#write-your-own-distributed-job)
@@ -101,6 +103,11 @@ The joins example demonstrates inner/left joins, cogroup, set operations,
 Cartesian products, and zip. The text-file example creates its own temporary
 input and output. More examples are in [`examples/`](examples/).
 
+`FullOuterJoin(left, right, partitioner)` yields `Pair[*V, *W]`: nil marks an
+absent side, and shared keys produce every combination. `SubtractByKey(left,
+right, partitioner)` keeps every left record whose key does not occur on the
+right, including duplicate left values.
+
 ### A complete wordcount application
 
 ```go
@@ -140,6 +147,40 @@ func main() {
 Results are `hello: 3`, `world: 2`, and `spark: 2`; key order is unspecified.
 Use `spark.TextFile(ctx, "input.txt", 2)` instead of `Parallelize` for a local
 text file. `Collect` brings the whole result into the caller's memory.
+`TreeAggregate(rdd, zero, seqOp, combOp)` and `TreeReduce(rdd, fn)` fold
+within partitions before merging partials; `TreeReduce` returns `(value, false)`
+for empty input. Mutable zero values are copied for each partition.
+
+Partition operations: `Lookup(pairs, key)` reads the key's partition when one
+is set (otherwise scans); `ForEachPartition(rdd, fn)` runs an iterator callback
+once per partition without returning records. `ZipWithIndex(rdd)` numbers rows
+in partition order, starting at zero; it rereads preceding partitions to count
+them, so inputs should be deterministic. `ZipPartitions(rdds, fn)` passes the
+same-index iterators from any number of equal-partition-count RDDs to `fn`.
+
+### Checkpoint an RDD
+
+```go
+if err := ctx.SetCheckpointDir("/shared/gospark-checkpoints"); err != nil {
+	panic(err)
+}
+path, err := spark.Checkpoint(counts)
+if err != nil {
+	panic(err)
+}
+// Later actions on counts (and downstream RDDs) read the saved partitions.
+// Another context can reconstruct the RDD:
+saved, err := spark.ReadCheckpoint[spark.Pair[string, int]](ctx, path)
+```
+
+`Checkpoint` eagerly materializes every partition before switching the RDD to
+file-backed reads; call it between actions. Checkpoints survive `ctx.Stop()` and
+must be removed by the application when no longer needed. For distributed jobs,
+the checkpoint directory **must be on a filesystem shared by the driver and
+every worker at the same absolute path** (for example, a shared volume). Pass
+the returned path to the registered factory via `JobSpec.Params` and use
+`ReadCheckpoint` there, so driver and workers construct the same lineage-free
+graph. Container-local temporary files are not shared across workers.
 
 ### Run the bundled worker in a container
 
@@ -364,6 +405,13 @@ records, err := spark.Schedule(spark.JobSpec{
 _ = records
 _ = err
 ```
+
+For a bounded aggregate result, register `RegisterTreeAggregate[T, U](action,
+zero, seqOp, combOp)` or `RegisterTreeReduce[T](action, fn)` in both the driver
+and worker program, then use that name as `JobSpec.Action` with `Schedule`.
+Workers send at most one partial per result partition; `Schedule` returns one
+merged record (or none for an empty tree reduction). The zero must be an
+identity for `combOp`; use associative operations for predictable results.
 
 Use `JobSpec.Params` for explicit inputs/parameters and `ScheduleSave` for
 distributed output. `AddBroadcast` attaches a small gob-encoded lookup (8 MiB

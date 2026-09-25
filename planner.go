@@ -62,6 +62,7 @@ func PlanJob(spec JobSpec) (*JobPlan, error) {
 		NumPartitions: spec.NumPartitions,
 	})
 	defer ctx.Stop()
+	ctx.prepareAccumulators(spec)
 	ctx.installInputSplits(spec.InputSplits)
 	rdd, err := factory(ctx, spec)
 	if err != nil {
@@ -343,6 +344,11 @@ func fingerprintPlan(plan *JobPlan) string {
 	for _, b := range broadcasts {
 		sum := sha256.Sum256(b.Gob)
 		fmt.Fprintf(h, "broadcast.%s=%s\n", b.Name, hex.EncodeToString(sum[:]))
+	}
+	accumulators := append([]AccumulatorDef(nil), spec.Accumulators...)
+	sort.Slice(accumulators, func(i, j int) bool { return accumulators[i].Name < accumulators[j].Name })
+	for _, a := range accumulators {
+		fmt.Fprintf(h, "accumulator.%s=%s\n", a.Name, a.Kind)
 	}
 	fmt.Fprintf(h, "result=%d\n", plan.ResultStageID)
 	stages := append([]Stage(nil), plan.Stages...)

@@ -274,8 +274,8 @@ disables goSpark's default-chain opt-in; use the Go setting when you need both.
 directory or S3 prefix. A single file is split by byte ranges. Multiple files
 stay whole and are balanced across the requested partitions; names starting
 with `.` or `_` (including `_SUCCESS`) are skipped. Use it inside a registered
-job so every worker lists the same path. The bundled `k8s-wc` job uses a small
-built-in dataset.
+job so the driver ships those splits to every worker. The bundled `k8s-wc`
+job uses a small built-in dataset.
 
 ### Save distributed results to S3
 

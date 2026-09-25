@@ -413,6 +413,34 @@ For detailed execution, recovery, output, and memory semantics, see
 
 ## Future work
 
+For a more complete **distributed Spark RDD replacement**, the highest-impact
+gaps are:
+
+1. **Parallel, locality-aware scheduling:** Run independent partitions
+   concurrently across executors, place tasks near cached data and shuffle
+   blocks, and support executor discovery and elastic scaling. Today task
+   execution is sequential and the driver receives a fixed worker list.
+2. **Durable driver recovery:** Persist job plans, accepted attempts, and
+   shuffle/output metadata so a replacement driver can resume after a crash.
+   Current recovery handles executor/shuffle loss while the driver remains alive.
+3. **Distributed cache and shuffle lifecycle:** Track cached partition locations,
+   reuse them across tasks, recompute only missing partitions, and manage shuffle
+   retention, disk quotas, spill cleanup, and backpressure. Cached data and
+   shuffle files currently live on individual executors' local storage.
+4. **Scalable partitioned I/O and sorting:** Split large input files across
+   workers, support partitioned datasets and common storage formats, and use
+   range partitioning for `SortByKey`. The current text reader handles a single
+   object, while sorting repeats global work for each output partition.
+5. **RDD API and execution compatibility:** Fill gaps in transformations,
+   actions, partitioner semantics, broadcast variables, and accumulators;
+   define serialization and task-side-effect guarantees clearly. Cross-language
+   or binary compatibility with Apache Spark is a separate undertaking.
+6. **Production observability and scale qualification:** Expose per-stage/task
+   metrics, traces and a job UI; test worker churn, skew, large shuffles, and
+   concurrent jobs under sustained load.
+
+Additional directions:
+
 - **Kubernetes custom resource (CRD) and controller:** Define jobs declaratively,
   with an operator to create and monitor driver Jobs and executor pods, manage
   retries and cleanup, and report job status through Kubernetes. Today you

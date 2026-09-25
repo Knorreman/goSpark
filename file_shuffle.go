@@ -160,7 +160,7 @@ func writeStreamMap(ctx *Context, store *DiskShuffleStore, dep *ShuffleDep, part
 	if err != nil {
 		return manifest, err
 	}
-	defer os.RemoveAll(tmp)
+	defer store.budget.removeDir(tmp)
 	writers := make([]*bucketWriter, n)
 	active := []int{}
 	defer func() {
@@ -171,7 +171,7 @@ func writeStreamMap(ctx *Context, store *DiskShuffleStore, dep *ShuffleDep, part
 		}
 	}()
 	for i := range writers {
-		writers[i], err = newBucketWriter(filepath.Join(tmp, bucketName(i)))
+		writers[i], err = newBucketWriter(filepath.Join(tmp, bucketName(i)), store.budget)
 		if err != nil {
 			return manifest, err
 		}
@@ -271,7 +271,7 @@ func writeStreamMap(ctx *Context, store *DiskShuffleStore, dep *ShuffleDep, part
 		manifest.Buckets = append(manifest.Buckets, meta)
 	}
 	ctx.checkCanceled()
-	if err = os.Rename(tmp, dir); err != nil {
+	if err = store.budget.renameDir(tmp, dir); err != nil {
 		return manifest, err
 	}
 	return manifest, nil

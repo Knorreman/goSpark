@@ -29,8 +29,9 @@ type ShuffleBucketMeta struct {
 }
 
 type DiskShuffleStore struct {
-	root  string
-	codec RecordCodec
+	root   string
+	codec  RecordCodec
+	budget *diskBudget
 }
 
 func NewDiskShuffleStore(root string) *DiskShuffleStore {

@@ -130,9 +130,9 @@ channel keys and NaNs are rejected.
 
 `Collect`, `Schedule` with collect, explicit caching, and user-created slices still
 materialize data by design. Use `ScheduleSave`, iterator consumption, or Count
-for outputs larger than memory. Disk space is not quota-managed yet. Sort/fetch
-scratch files are owned by the Context and cleaned on Stop (task contexts Stop
-on both success and failure); published map outputs must remain for reducers.
+for outputs larger than memory. Sort/fetch scratch files are owned by the
+Context and cleaned on Stop (task contexts Stop on both success and failure);
+published map outputs must remain for reducers.
 
 After a distributed job finishes or fails, the driver asks each configured
 worker to delete that job's published shuffle files. A worker refuses cleanup
@@ -145,8 +145,15 @@ reclaim disk; lost blocks trigger recovery but can exhaust its retry budget.
 Set `GOSPARK_SHUFFLE_MAP_MAX_BYTES` (positive bytes) on every executor to fail
 a single shuffle map attempt before its encoded output exceeds that size,
 including bucket headers. Failed attempts remove their unpublished temporary
-files. This is a **per-map-output limit**, not a worker-wide quota: concurrent
-maps, shuffle fetch scratch files, and other workloads can consume more disk.
+files. Set `GOSPARK_SHUFFLE_DISK_BYTES` (positive bytes) on each `serve` worker
+to bound the **combined** bytes reserved for published map outputs, unfinished
+map attempts, fetched buckets, and external-sort runs across concurrent jobs.
+Writes fail before crossing the configured budget; task scratch lives under
+`GOSPARK_STORE` and releases its reservations on task completion or failure.
+Job cleanup releases published output reservations; worker startup counts
+files left in `GOSPARK_STORE` by previous runs rather than treating the store
+as empty. Keep headroom for other files, the filesystem, and non-shuffle cache
+data; this is a shuffle budget, not a filesystem or pod-wide hard quota.
 
 The memory CI job streams a **320 MiB** dataset through external sort and a
 high-cardinality/skewed ReduceByKey inside a **128 MiB** container (swap disabled,

@@ -210,6 +210,7 @@ func computeShuffleStages(rddAny RDDAny) {
 			dir, err := os.MkdirTemp(ctx.disk.dir, "local-stage-")
 			must(err)
 			store := NewDiskShuffleStore(dir)
+			store.budget = ctx.shuffleBudget
 			store.codec = cancelCodec{ctx: ctx.TaskContext(), RecordCodec: DefaultCodec()}
 			for _, p := range partitions {
 				manifest, err := writeStreamMap(ctx, store, shuffleDep, p, "local", p.Index(), 0)

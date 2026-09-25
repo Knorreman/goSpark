@@ -8,6 +8,7 @@ import (
 )
 
 type Task struct {
+	budget      *diskBudget
 	JobID       string
 	Job         JobSpec
 	StageID     int
@@ -85,6 +86,16 @@ func ExecuteTaskContext(execution context.Context, task Task) (result ExecResult
 		NumPartitions: task.Job.NumPartitions,
 	})
 	defer ctx.Stop()
+	if task.budget != nil {
+		ctx.disk.clear()
+		path, err := os.MkdirTemp(task.StoreDir, "scratch-")
+		if err != nil {
+			return ExecResult{}, err
+		}
+		ctx.disk.dir = path
+		ctx.shuffleBudget = task.budget
+		ctx.onClose(func() { _ = task.budget.removeDir(path) })
+	}
 	ctx.execution = execution
 	rdd, err := factory(ctx, task.Job)
 	if err != nil {
@@ -95,6 +106,7 @@ func ExecuteTaskContext(execution context.Context, task Task) (result ExecResult
 		jobID = task.Job.TaskName
 	}
 	store := NewDiskShuffleStore(task.StoreDir)
+	store.budget = task.budget
 	store.codec = cancelCodec{ctx: execution, RecordCodec: store.codec}
 	actual, err := PlanRDD(rdd, task.Job)
 	if err != nil || actual.Fingerprint != plan.Fingerprint {

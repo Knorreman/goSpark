@@ -36,6 +36,10 @@ var jobIDPattern = regexp.MustCompile(`^job-[0-9a-f]{32}$`)
 func validJobID(id string) bool { return jobIDPattern.MatchString(id) }
 
 func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
+	budget, err := newDiskBudget(storeDir)
+	if err != nil {
+		return nil, "", err
+	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, "", err
@@ -79,6 +83,7 @@ func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
 			activeMu.Unlock()
 		}()
 		task.StoreDir = storeDir
+		task.budget = budget
 		res, err := ExecuteTaskContext(r.Context(), task)
 		if r.Context().Err() != nil {
 			return
@@ -133,7 +138,7 @@ func ServeWorker(storeDir, addr string) (*http.Server, string, error) {
 			http.Error(w, "job has active tasks", http.StatusConflict)
 			return
 		}
-		if err := os.RemoveAll(NewDiskShuffleStore(storeDir).jobDir(jobID)); err != nil {
+		if err := budget.removeDir(NewDiskShuffleStore(storeDir).jobDir(jobID)); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	})

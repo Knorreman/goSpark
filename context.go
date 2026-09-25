@@ -17,6 +17,7 @@ type Context struct {
 	shuffleManager ShuffleManager
 	cache          *memoryCache
 	disk           *diskCache
+	shuffleBudget  *diskBudget
 	rddIDs         atomic.Int64
 	shuffleIDs     atomic.Int64
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	spark "goSpark"
+	_ "goSpark/mllib"
 )
 
 func init() {

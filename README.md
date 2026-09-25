@@ -373,6 +373,30 @@ them. Use `ctx.TaskContext()` for cancellable I/O in callbacks.
 The supplied `schedule` CLI accepts the built-in collect/save modes; passing
 arbitrary `JobSpec.Params` requires your own Go driver.
 
+## Linear regression
+
+The `goSpark/mllib` package trains linear regression with L-BFGS, the scalable
+solver Spark uses instead of a driver-side normal-equation solve. Each
+iteration broadcasts the current weights. Workers stream their own rows and
+return a gradient; the driver updates the weights and does not collect the
+training rows. Import it from the worker program as well as the driver. The
+bundled worker image already does this.
+
+```go
+model, err := mllib.TrainFiles("s3://bucket/train/", workers, 4, mllib.DefaultConfig())
+prediction, err := model.Predict([]float64{1.5, -2})
+```
+
+Training text is one row per line: `label f1 f2 ...`. Features are standardized
+for the solver and converted back to the original scale. Each iteration
+re-reads the input and returns only an O(features) gradient. The default is at
+most 100 iterations, with no L2 penalty.
+
+`TrainLogistic` uses the same loop for binary classification. Labels must be
+0 or 1. `Predict` returns the class at probability 0.5, and
+`PredictProbability` returns the positive-class probability. This is not a
+general ML pipeline.
+
 ## Configuration
 
 ### Worker and driver environment
@@ -461,9 +485,9 @@ Additional directions:
   with an operator to create and monitor driver Jobs and executor pods, manage
   retries and cleanup, and report job status through Kubernetes. Today you
   deploy the generated manifests and submit Jobs yourself.
-- **MLlib-style machine learning:** Add distributed algorithms and reusable
-  feature-processing pipelines on top of the RDD engine. There is currently no
-  MLlib API or model-training framework.
+- **More MLlib algorithms:** Linear and binary logistic regression are trained
+  with distributed L-BFGS in `goSpark/mllib`. Multiclass classification and
+  feature pipelines are not implemented yet.
 
 ## Tests and troubleshooting
 

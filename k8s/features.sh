@@ -10,6 +10,9 @@ IMAGE="${GOSPARK_IMAGE:-gospark/worker:latest}"
 TEXT_CM=gospark-text
 LOGISTIC_CM=gospark-logistic
 LINEAR_CM=gospark-linear
+export GOSPARK_TEXT_CONFIGMAP="$TEXT_CM"
+export GOSPARK_LOGISTIC_CONFIGMAP="$LOGISTIC_CM"
+export GOSPARK_LINEAR_CONFIGMAP="$LINEAR_CM"
 
 kubectl rollout status statefulset/gospark-exec -n "$NAMESPACE" --timeout=180s
 

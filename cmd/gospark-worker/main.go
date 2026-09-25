@@ -650,7 +650,7 @@ func runPrintK8s() {
 		} else if secs, _ := strconv.Atoi(os.Getenv("GOSPARK_TEST_PAUSE_AFTER_MAP")); secs > 0 {
 			fmt.Print(spark.K8sFailureTestDriverManifest(ns, image, task, 2, 2, secs))
 		} else if input := os.Getenv("GOSPARK_INPUT"); input != "" {
-			fmt.Print(spark.K8sDriverManifestWithInput(ns, image, task, input, 2, 2))
+			fmt.Print(spark.K8sDriverManifestWithInput(ns, image, task, input, 2, 2, dataMounts()))
 		} else {
 			fmt.Print(spark.K8sDriverManifest(ns, image, task, 2, 2))
 		}
@@ -662,6 +662,14 @@ func runPrintK8s() {
 }
 
 func executorManifest(namespace, image string) string {
+	mounts := dataMounts()
+	if len(mounts) == 0 {
+		return spark.K8sExecutorManifest(namespace, image, 2)
+	}
+	return spark.K8sExecutorManifestWithData(namespace, image, 2, mounts)
+}
+
+func dataMounts() []spark.K8sMount {
 	var mounts []spark.K8sMount
 	if cm := os.Getenv("GOSPARK_TEXT_CONFIGMAP"); cm != "" {
 		mounts = append(mounts, spark.K8sMount{Name: "text", ConfigMap: cm, Path: "/data/text"})
@@ -672,8 +680,5 @@ func executorManifest(namespace, image string) string {
 	if cm := os.Getenv("GOSPARK_LINEAR_CONFIGMAP"); cm != "" {
 		mounts = append(mounts, spark.K8sMount{Name: "linear", ConfigMap: cm, Path: "/data/linear"})
 	}
-	if len(mounts) == 0 {
-		return spark.K8sExecutorManifest(namespace, image, 2)
-	}
-	return spark.K8sExecutorManifestWithData(namespace, image, 2, mounts)
+	return mounts
 }

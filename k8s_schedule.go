@@ -116,25 +116,26 @@ func K8sFailureTestDriverManifest(namespace, image, taskName string, partitions,
 }
 
 func k8sDriverManifest(namespace, image, taskName string, partitions, replicas, pauseSeconds int) string {
-	return k8sDriverManifestWithSave(namespace, image, taskName, partitions, replicas, pauseSeconds, "", "", "")
+	return k8sDriverManifestWithSave(namespace, image, taskName, partitions, replicas, pauseSeconds, "", "", "", nil)
 }
 
-// K8sDriverManifestWithInput sets GOSPARK_INPUT for jobs that read a mounted path.
-func K8sDriverManifestWithInput(namespace, image, taskName, inputPath string, partitions, replicas int) string {
+// K8sDriverManifestWithInput sets GOSPARK_INPUT and mounts the same input
+// directories the executors see. The driver must plan against those files.
+func K8sDriverManifestWithInput(namespace, image, taskName, inputPath string, partitions, replicas int, mounts []K8sMount) string {
 	extra := ""
 	if inputPath != "" {
 		extra = fmt.Sprintf("        - name: GOSPARK_INPUT\n          value: %q\n", inputPath)
 	}
-	return k8sDriverManifestWithSave(namespace, image, taskName, partitions, replicas, 0, "", "", extra)
+	return k8sDriverManifestWithSave(namespace, image, taskName, partitions, replicas, 0, "", "", extra, mounts)
 }
 
 // K8sSaveDriverManifest submits an output action; s3Secret names an optional
 // Secret containing AWS_* settings for the driver (and separately for workers).
 func K8sSaveDriverManifest(namespace, image, taskName, outputPath, s3Secret string, partitions, replicas int) string {
-	return k8sDriverManifestWithSave(namespace, image, taskName, partitions, replicas, 0, outputPath, s3Secret, "")
+	return k8sDriverManifestWithSave(namespace, image, taskName, partitions, replicas, 0, outputPath, s3Secret, "", nil)
 }
 
-func k8sDriverManifestWithSave(namespace, image, taskName string, partitions, replicas, pauseSeconds int, outputPath, s3Secret, extraEnv string) string {
+func k8sDriverManifestWithSave(namespace, image, taskName string, partitions, replicas, pauseSeconds int, outputPath, s3Secret, extraEnv string, mounts []K8sMount) string {
 	if namespace == "" {
 		namespace = "default"
 	}
@@ -155,6 +156,7 @@ func k8sDriverManifestWithSave(namespace, image, taskName string, partitions, re
 		testEnv += fmt.Sprintf("        envFrom:\n        - secretRef:\n            name: %s\n", s3Secret)
 	}
 	testEnv += extraEnv
+	volumeMounts, volumes := k8sMountYAML(mounts, "        ", "      ")
 	return fmt.Sprintf(`
 apiVersion: batch/v1
 kind: Job
@@ -178,7 +180,22 @@ spec:
           value: "%d"
         - name: GOSPARK_WORKERS
           value: %q
-%s`, namespace, image, taskName, partitions, strings.Join(K8sWorkerURLs("gospark-exec", namespace, replicas), ","), testEnv)
+%s
+%s
+%s`, namespace, image, taskName, partitions, strings.Join(K8sWorkerURLs("gospark-exec", namespace, replicas), ","), testEnv, volumeMounts, volumes)
+}
+
+func k8sMountYAML(mounts []K8sMount, mountIndent, volumeIndent string) (string, string) {
+	if len(mounts) == 0 {
+		return "", ""
+	}
+	volumeMounts := mountIndent + "volumeMounts:\n"
+	volumes := volumeIndent + "volumes:\n"
+	for _, m := range mounts {
+		volumeMounts += fmt.Sprintf("%s- name: %s\n%s  mountPath: %s\n", mountIndent, m.Name, mountIndent, m.Path)
+		volumes += fmt.Sprintf("%s- name: %s\n%s  configMap:\n%s    name: %s\n", volumeIndent, m.Name, volumeIndent, volumeIndent, m.ConfigMap)
+	}
+	return volumeMounts, volumes
 }
 
 func K8sWorkerURLs(service, namespace string, replicas int) []string {

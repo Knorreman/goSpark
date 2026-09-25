@@ -93,6 +93,7 @@ type bucketWriter struct {
 	count    uint32
 	size     int64
 	checksum uint32
+	unsynced int
 }
 
 func newBucketWriter(path string) (*bucketWriter, error) {
@@ -133,6 +134,18 @@ func (w *bucketWriter) append(payload []byte) error {
 	w.count++
 	w.size += int64(len(payload) + 8)
 	w.checksum = crc32.Update(w.checksum, crc32.IEEETable, payload)
+	w.unsynced += len(payload) + 8
+	// Dirty file-backed pages count against cgroup RAM too. Flush incrementally
+	// so a fast producer cannot pin an entire bucket in unreclaimable page cache.
+	if w.unsynced >= 1<<20 {
+		if err := w.buffer.Flush(); err != nil {
+			return err
+		}
+		if err := w.file.Sync(); err != nil {
+			return err
+		}
+		w.unsynced = 0
+	}
 	return nil
 }
 func (w *bucketWriter) suspend() error {
@@ -140,6 +153,10 @@ func (w *bucketWriter) suspend() error {
 		return nil
 	}
 	err := w.buffer.Flush()
+	if err == nil {
+		err = w.file.Sync()
+	}
+	w.unsynced = 0
 	closeErr := w.file.Close()
 	w.file = nil
 	w.buffer = nil

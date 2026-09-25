@@ -6,14 +6,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 NS="${GOSPARK_NAMESPACE:-gospark-two-pod}"
 ENGINE="${GOSPARK_ENGINE:-docker}"
-IMAGE="quay.io/minio/minio:RELEASE.2025-02-07T23-21-09Z"
+IMAGE="localhost/gospark-minio:test"
 OUTPUT="s3://gospark-output/ci-output"
 
 if [ "$ENGINE" = podman ]; then
-  podman pull "$IMAGE"
+  podman build -f ci/Minio.Dockerfile -t "$IMAGE" .
   KIND_EXPERIMENTAL_PROVIDER=podman kind load docker-image "$IMAGE" --name kind-cluster
 else
-  docker pull "$IMAGE"
+  docker build -f ci/Minio.Dockerfile -t "$IMAGE" .
   kind load docker-image "$IMAGE" --name kind-cluster
 fi
 

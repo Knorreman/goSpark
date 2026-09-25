@@ -23,10 +23,17 @@ jobs:
         run: CGO_ENABLED=0 go test -c -o /tmp/gospark-memory.test .
       - name: Process 320 MiB under a hard 128 MiB memory limit
         run: |
-          docker run --rm --memory=128m --memory-swap=128m \
+          mkdir -p "$RUNNER_TEMP/gospark-scratch"
+          docker run --name gospark-memory --memory=128m --memory-swap=128m \
             -e GOMEMLIMIT=64MiB -e GOSPARK_MEMORY_STRESS=1 \
             -v /tmp/gospark-memory.test:/bench:ro \
+            -v "$RUNNER_TEMP/gospark-scratch:/tmp" \
             alpine:3.19 /bench -test.run '^TestBoundedLargeInput$' -test.v -test.timeout=15m
+      - name: Memory container diagnostics and cleanup
+        if: always()
+        run: |
+          docker inspect --format '{{json .State}}' gospark-memory || true
+          docker rm -f gospark-memory || true
   build-test:
     name: Build and Test (Go ${{ matrix.go }})
     runs-on: ubuntu-latest
@@ -112,9 +119,10 @@ jobs:
           cache: true
       - name: Start MinIO
         run: |
+          docker build -f ci/Minio.Dockerfile -t gospark/minio:test .
           docker run -d --name gospark-minio -p 127.0.0.1:19000:9000 \
             -e MINIO_ROOT_USER=gosparktest -e MINIO_ROOT_PASSWORD=gosparktest-secret \
-            quay.io/minio/minio:RELEASE.2025-02-07T23-21-09Z server /data --address :9000
+            gospark/minio:test server /data --address :9000
           for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:19000/minio/health/live; then exit 0; fi
             sleep 1

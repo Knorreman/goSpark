@@ -70,6 +70,7 @@ run_task() {
 }
 
 run_task k8s-broadcast "" "BROADCAST a=3 b=5"
+run_task k8s-normalized "" "NORMALIZED total=10 shares=0.2,0.3,0.5"
 run_task k8s-sort "" "SORTED [1 2 3 4]"
 run_task k8s-text /data/text "TEXT hello=2 world=1 spark=1"
 run_task k8s-logistic /data/logistic "LOGISTIC low=0 high=1" 600

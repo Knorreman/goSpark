@@ -14,6 +14,7 @@ import (
 	"time"
 
 	spark "goSpark"
+	"goSpark/examples/broadcastaverage"
 	"goSpark/mllib"
 )
 
@@ -484,6 +485,19 @@ func runSchedule() {
 			fmt.Fprintf(os.Stderr, "train failed: %v\n", err)
 			os.Exit(1)
 		}
+		fmt.Println("Schedule PASSED!")
+		return
+	}
+	if taskName == "k8s-normalized" {
+		result, err := broadcastaverage.Distributed(runners, np)
+		if err == nil {
+			err = broadcastaverage.Check(result)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "normalized job failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("NORMALIZED total=%g shares=%g,%g,%g\n", result.Total, result.Averages[0], result.Averages[1], result.Averages[2])
 		fmt.Println("Schedule PASSED!")
 		return
 	}

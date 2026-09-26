@@ -7,6 +7,7 @@ RUN go mod download
 
 COPY *.go ./
 COPY mllib ./mllib
+COPY examples/broadcastaverage ./examples/broadcastaverage
 COPY cmd/gospark-worker/main.go ./cmd/gospark-worker/main.go
 
 RUN CGO_ENABLED=0 GOOS=linux go build -o /gospark-worker ./cmd/gospark-worker/

@@ -15,6 +15,28 @@ type Broadcast struct {
 	Gob  []byte `json:"gob"`
 }
 
+// BroadcastVar is a read-only-by-convention handle for a value used by RDD
+// callbacks. A local handle does not automatically ship its value to workers;
+// distributed jobs must also place the value in JobSpec with AddBroadcast.
+type BroadcastVar[T any] struct{ value T }
+
+// NewBroadcast creates a handle scoped to a local context or reconstructed
+// worker job. Use ReadBroadcastVar when that worker value comes from JobSpec.
+func NewBroadcast[T any](_ *Context, value T) BroadcastVar[T] {
+	return BroadcastVar[T]{value: value}
+}
+
+func (b BroadcastVar[T]) Value() T { return b.value }
+
+// ReadBroadcastVar rebuilds a broadcast handle inside a registered job factory.
+func ReadBroadcastVar[T any](ctx *Context, spec JobSpec, name string) (BroadcastVar[T], error) {
+	value, err := ReadBroadcast[T](spec, name)
+	if err != nil {
+		return BroadcastVar[T]{}, err
+	}
+	return NewBroadcast(ctx, value), nil
+}
+
 // AddBroadcast encodes value onto spec. The same spec must be submitted to
 // every worker. Values are read-only after encoding.
 func AddBroadcast(spec *JobSpec, name string, value any) error {

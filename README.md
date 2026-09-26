@@ -97,11 +97,40 @@ From the repository root:
 go run ./examples/wordcount
 go run ./examples/joins
 go run ./examples/textfile
+go run ./examples/broadcast-average
 ```
 
 The joins example demonstrates inner/left joins, cogroup, set operations,
 Cartesian products, and zip. The text-file example creates its own temporary
-input and output. More examples are in [`examples/`](examples/).
+input and output. The broadcast-average example reduces `[2, 3, 5]` to 10,
+broadcasts that total, then maps the records to `[0.2, 0.3, 0.5]`. More
+examples are in [`examples/`](examples/).
+
+Its local RDD code mirrors the Spark expression:
+
+```go
+total, _ := spark.Reduce(rdd, func(a, b float64) float64 { return a + b })
+totalBc := spark.NewBroadcast(ctx, total)
+averages := spark.Map(rdd, func(x float64) float64 { return x / totalBc.Value() })
+```
+
+For distributed execution, the first registered job reduces to one total on
+the driver. It calls `AddBroadcast` for the second job; that job's factory uses
+`ReadBroadcastVar` to reconstruct the handle on each worker. A local handle
+alone does not ship the captured Go closure to workers.
+
+To run the same reduce → broadcast → map pipeline on a local kind cluster,
+run `./k8s/two-pod.sh` followed by `./k8s/features.sh`. Its `k8s-normalized`
+driver Job reduces on two workers, broadcasts the resulting total in a second
+job, and checks all three normalized values. To submit just that job after
+the executors are ready:
+
+```bash
+kubectl delete job gospark-driver -n gospark-two-pod --ignore-not-found --wait=true
+GOSPARK_TASK=k8s-normalized ./bin/gospark-worker print-k8s driver | kubectl apply -f -
+kubectl wait --for=condition=complete job/gospark-driver -n gospark-two-pod --timeout=300s
+kubectl logs -n gospark-two-pod -l job-name=gospark-driver
+```
 
 `FullOuterJoin(left, right, partitioner)` yields `Pair[*V, *W]`: nil marks an
 absent side, and shared keys produce every combination. `SubtractByKey(left,
@@ -549,7 +578,7 @@ go vet ./...
 
 # Disposable kind integration environment:
 ./k8s/two-pod.sh
-./k8s/features.sh      # broadcast, multi-file text, sort, logistic, linear
+./k8s/features.sh      # reduce + broadcast + map, text, sort, logistic, linear
 ./k8s/recovery.sh       # deliberately deletes an executor
 ./k8s/minio-output.sh  # MinIO commits and injected save retries
 ```

@@ -11,7 +11,7 @@ import (
 )
 
 // ScheduleCache owns reusable memory caches on a set of workers. Keep the same
-// worker processes for subsequent Schedule calls using specs returned by Persist.
+// worker processes for subsequent RunPipeline calls using specs returned by Persist.
 type ScheduleCache struct {
 	runners []TaskRunner
 	mu      sync.Mutex

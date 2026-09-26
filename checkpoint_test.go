@@ -84,7 +84,7 @@ func TestCheckpointEmptyAndMissingPartition(t *testing.T) {
 }
 
 func init() {
-	RegisterJob("checkpoint-read", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("checkpoint-read", func(ctx *Context, spec JobSpec) (*RDD[int], error) {
 		return ReadCheckpoint[int](ctx, spec.Params["checkpoint"])
 	})
 }
@@ -103,7 +103,7 @@ func TestCheckpointAcrossWorkerProcesses(t *testing.T) {
 		Params: map[string]string{"checkpoint": path}}
 	w1 := startTestWorker(t)
 	w2 := startTestWorker(t)
-	records, err := Schedule(spec, []TaskRunner{w1, w2})
+	records, err := RunPipelineAny(spec, []TaskRunner{w1, w2})
 	if err != nil {
 		t.Fatal(err)
 	}

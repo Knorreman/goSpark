@@ -1,13 +1,14 @@
 package spark
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"testing"
 )
 
 func init() {
-	RegisterJob("accumulator-check", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("accumulator-check", func(ctx *Context, spec JobSpec) (*RDD[int], error) {
 		count, err := NewInt64Accumulator(ctx, "items")
 		if err != nil {
 			return nil, err
@@ -62,7 +63,7 @@ func checkAccumulatorTotals(t *testing.T, count *Int64Accumulator, weight *Float
 
 func TestLocalCollectAccumulators(t *testing.T) {
 	ctx, spec, count, weight := accumulatorFixture(t)
-	factory, _ := GetJob(spec.TaskName)
+	factory, _ := getJob(spec.TaskName)
 	rdd, err := factory(ctx, spec)
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +77,7 @@ func TestLocalCollectAccumulators(t *testing.T) {
 
 func TestDistributedAccumulators(t *testing.T) {
 	_, spec, count, weight := accumulatorFixture(t)
-	got, err := Schedule(spec, []TaskRunner{startTestWorker(t), startTestWorker(t)})
+	got, err := RunPipelineAny(spec, []TaskRunner{startTestWorker(t), startTestWorker(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +99,7 @@ func (r lostAccumulatorResponse) Exec(task Task) (ExecResult, error) {
 
 func TestRetriedAccumulatorPartition(t *testing.T) {
 	_, spec, count, weight := accumulatorFixture(t)
-	_, err := Schedule(spec, []TaskRunner{lostAccumulatorResponse{localRunner{storeDir: t.TempDir()}}})
+	_, err := RunPipelineAny(spec, []TaskRunner{lostAccumulatorResponse{localRunner{storeDir: t.TempDir()}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +110,7 @@ func TestRepairedAccumulatorMap(t *testing.T) {
 	_, spec, count, weight := accumulatorFixture(t)
 	spec.Params = map[string]string{"shuffle": "true"}
 	removed := false
-	_, err := ScheduleWith(spec, []TaskRunner{localRunner{storeDir: t.TempDir()}}, ScheduleOpts{OnTaskComplete: func(_ Task, result ExecResult) error {
+	_, err := RunPipelineAnyContext(context.Background(), spec, []TaskRunner{localRunner{storeDir: t.TempDir()}}, ScheduleOpts{OnTaskComplete: func(_ Task, result ExecResult) error {
 		if !removed && result.Manifest != nil {
 			removed = true
 			return os.RemoveAll(result.Manifest.Location)

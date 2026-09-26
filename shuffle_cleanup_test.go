@@ -17,7 +17,7 @@ func TestShuffleCleanupAfterSuccessAndFailure(t *testing.T) {
 			dir := t.TempDir()
 			var jobID string
 			var mapPath string
-			_, err := ScheduleWith(JobSpec{TaskName: "sched-wc", Action: ActionCollect, NumPartitions: 2},
+			_, err := RunPipelineAnyContext(context.Background(), JobSpec{TaskName: "sched-wc", Action: ActionCollect, NumPartitions: 2},
 				[]TaskRunner{localRunner{storeDir: dir}}, ScheduleOpts{OnTaskComplete: func(task Task, res ExecResult) error {
 					jobID = task.JobID
 					if res.Manifest != nil {
@@ -44,7 +44,7 @@ func TestShuffleCleanupAfterSuccessAndFailure(t *testing.T) {
 func TestRemoteShuffleCleanupAndValidation(t *testing.T) {
 	worker := startTestWorker(t)
 	var jobID, mapPath string
-	_, err := ScheduleWith(JobSpec{TaskName: "sched-wc", Action: ActionCollect, NumPartitions: 2},
+	_, err := RunPipelineAnyContext(context.Background(), JobSpec{TaskName: "sched-wc", Action: ActionCollect, NumPartitions: 2},
 		[]TaskRunner{worker}, ScheduleOpts{OnTaskComplete: func(task Task, res ExecResult) error {
 			jobID = task.JobID
 			if res.Manifest != nil {
@@ -71,7 +71,7 @@ func TestShuffleCleanupAfterCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var jobID string
-	_, err := ScheduleContext(ctx, JobSpec{TaskName: "sched-wc", Action: ActionCollect, NumPartitions: 2},
+	_, err := RunPipelineAnyContext(ctx, JobSpec{TaskName: "sched-wc", Action: ActionCollect, NumPartitions: 2},
 		[]TaskRunner{localRunner{storeDir: dir}}, ScheduleOpts{OnTaskComplete: func(task Task, r ExecResult) error {
 			if r.Manifest != nil {
 				jobID = task.JobID
@@ -123,7 +123,7 @@ func TestShuffleMapByteLimit(t *testing.T) {
 func TestWorkerRejectsCleanupWhileTaskIsActive(t *testing.T) {
 	started := make(chan struct{}, 1)
 	jobID := "job-0123456789abcdef0123456789abcdef"
-	RegisterJob("cleanup-blocking", func(ctx *Context, _ JobSpec) (RDDAny, error) {
+	RegisterPipeline("cleanup-blocking", func(ctx *Context, _ JobSpec) (*RDD[int], error) {
 		return NewRDD[int](ctx, func() []Partition { return NewPartitions(1) }, nil, func(Partition) Iterator[int] {
 			return func() (int, bool) {
 				started <- struct{}{}

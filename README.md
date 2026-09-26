@@ -416,13 +416,13 @@ GOSPARK_LISTEN=127.0.0.1:8082 GOSPARK_STORE=/tmp/gospark-pipeline-2 bin/pipeline
 GOSPARK_WORKERS=http://127.0.0.1:8081,http://127.0.0.1:8082 bin/pipeline run
 ```
 
-### Lower-level registered jobs
+### Registering your own job
 
-For an existing lower-level application, add a registration inside `init()` in
+Add a registration inside `init()` in
 [`cmd/gospark-worker/main.go`](cmd/gospark-worker/main.go):
 
 ```go
-spark.RegisterJob("my-doubles", func(ctx *spark.Context, spec spark.JobSpec) (spark.RDDAny, error) {
+spark.RegisterPipeline("my-doubles", func(ctx *spark.Context, spec spark.JobSpec) (*spark.RDD[int], error) {
 	data := spark.Parallelize(ctx, []int{1, 2, 3, 4}, spec.NumPartitions)
 	return spark.Map(data, func(n int) int { return n * 2 }), nil
 })
@@ -434,42 +434,37 @@ deployment, then submit with `GOSPARK_TASK=my-doubles`. Use a new image tag so
 copies `main.go` explicitly; extend its `COPY` instructions if you split your
 application into more files/packages.
 
-In your own Go driver, submit parameterized jobs with the scheduler API:
+In your own Go driver, submit with `RunPipeline`:
 
 ```go
 workers := []spark.TaskRunner{
 	&spark.WorkerClient{BaseURL: "http://worker-a:8080"},
 	&spark.WorkerClient{BaseURL: "http://worker-b:8080"},
 }
-records, err := spark.Schedule(spark.JobSpec{
+records, err := spark.RunPipeline[int](spark.JobSpec{
 	TaskName:      "my-doubles",
-	Action:        spark.ActionCollect,
 	NumPartitions: 2,
 }, workers)
-// Handle err; records contains []any values returned by the job.
 _ = records
 _ = err
 ```
 
-For a bounded aggregate result, register `RegisterTreeAggregate[T, U](action,
-zero, seqOp, combOp)` or `RegisterTreeReduce[T](action, fn)` in both the driver
-and worker program, then use that name as `JobSpec.Action` with `Schedule`.
-Workers send at most one partial per result partition; `Schedule` returns one
-merged record (or none for an empty tree reduction). The zero must be an
-identity for `combOp`; use associative operations for predictable results.
+For a bounded aggregate, register `RegisterTreeAggregate[T, U](action, zero,
+seqOp, combOp)` or `RegisterTreeReduce[T](action, fn)` in both binaries, then
+set that name as `JobSpec.Action` and call `RunPipelineAny`. Workers send at
+most one partial per result partition; the driver returns one merged record, or
+none for an empty tree reduction. The zero must be an identity for `combOp`.
 
-Use `JobSpec.Params` for explicit inputs/parameters and `ScheduleSave` for
-distributed output. `AddBroadcast` attaches a small gob-encoded lookup (8 MiB
-total) that every worker reads with `ReadBroadcast` inside the factory; it is
-not shuffled. `ScheduleContext` and `ScheduleSaveContext` accept a
-`context.Context` and retry options. Factories must build deterministic graphs
-on driver and workers; do not perform actions such as `Collect` while building
-them. Use `ctx.TaskContext()` for cancellable I/O in callbacks.
+Use `JobSpec.Params` for inputs and `RunPipelineSave` for distributed output.
+`AddBroadcast` attaches a small gob-encoded lookup (8 MiB total) that every
+worker reads with `ReadBroadcast` inside the factory. `RunPipelineContext` and
+`RunPipelineSaveContext` accept a `context.Context` and retry options.
+Factories must build deterministic graphs on driver and workers; do not perform
+actions such as `Collect` while building them. Use `ctx.TaskContext()` for
+cancellable I/O in callbacks.
 
-The supplied `schedule` CLI accepts the built-in collect/save modes and uses
-`RunPipeline` for pipeline registrations; passing arbitrary `JobSpec.Params`
-requires your own Go driver. Existing `RegisterJob` / `Schedule` applications
-continue to work.
+The supplied `schedule` CLI submits compiled pipelines for collect and save.
+Passing arbitrary `JobSpec.Params` requires your own Go driver.
 
 ## Linear regression
 

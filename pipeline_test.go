@@ -165,9 +165,9 @@ func TestPipelineRejectsEmptyReductionAndPrematureValue(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "empty RDD") {
 		t.Fatalf("expected empty reduction error, got %v", err)
 	}
-	_, err = Schedule(JobSpec{TaskName: "pipeline-normalized", NumPartitions: 2}, []TaskRunner{localRunner{storeDir: t.TempDir()}})
-	if err == nil || !strings.Contains(err.Error(), "RunPipeline") {
-		t.Fatalf("expected pipeline submission error, got %v", err)
+	_, err = RunPipelineAny(JobSpec{TaskName: "pipeline-normalized", PipelinePhase: "final", NumPartitions: 2}, []TaskRunner{localRunner{storeDir: t.TempDir()}})
+	if err == nil || !strings.Contains(err.Error(), "phase") {
+		t.Fatalf("expected pipeline phase error, got %v", err)
 	}
 	ctx := NewContext(&Config{AppName: "unresolved-pipeline", Master: MasterLocal, NumPartitions: 1})
 	defer ctx.Stop()

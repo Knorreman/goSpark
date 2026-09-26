@@ -25,7 +25,7 @@ func TestSelectiveRecoveryKeepsHealthyMaps(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := plan.Stages[0]
-	got, err := ScheduleWith(spec, []TaskRunner{localRunner{storeDir: t.TempDir()}}, ScheduleOpts{
+	got, err := RunPipelineAnyContext(context.Background(), spec, []TaskRunner{localRunner{storeDir: t.TempDir()}}, ScheduleOpts{
 		MaxRecoveries: 4,
 		OnTaskComplete: func(task Task, res ExecResult) error {
 			k := taskKey{task.StageID, task.PartitionID}
@@ -58,7 +58,7 @@ func TestRecoveryInvalidatesAlreadyCollectedResults(t *testing.T) {
 	var manifest *MapOutputManifest
 	counts := map[int]int{}
 	removed := false
-	got, err := ScheduleWith(spec, []TaskRunner{localRunner{storeDir: t.TempDir()}}, ScheduleOpts{OnTaskComplete: func(task Task, res ExecResult) error {
+	got, err := RunPipelineAnyContext(context.Background(), spec, []TaskRunner{localRunner{storeDir: t.TempDir()}}, ScheduleOpts{OnTaskComplete: func(task Task, res ExecResult) error {
 		if res.Manifest != nil && manifest == nil {
 			m := *res.Manifest
 			manifest = &m
@@ -89,7 +89,7 @@ func TestRecoveryInvalidatesAlreadyCollectedResults(t *testing.T) {
 }
 
 func TestRecoveryBudgetExhaustion(t *testing.T) {
-	_, err := ScheduleWith(JobSpec{TaskName: "sched-wc", Action: ActionCollect, NumPartitions: 2}, []TaskRunner{localRunner{storeDir: t.TempDir()}}, ScheduleOpts{MaxRecoveries: 1, OnTaskComplete: func(_ Task, r ExecResult) error {
+	_, err := RunPipelineAnyContext(context.Background(), JobSpec{TaskName: "sched-wc", Action: ActionCollect, NumPartitions: 2}, []TaskRunner{localRunner{storeDir: t.TempDir()}}, ScheduleOpts{MaxRecoveries: 1, OnTaskComplete: func(_ Task, r ExecResult) error {
 		if r.Manifest != nil {
 			return os.RemoveAll(r.Manifest.Location)
 		}
@@ -139,7 +139,7 @@ func TestInFlightHeartbeatCancelsRequest(t *testing.T) {
 
 func TestCancellationStopsWorkerIteration(t *testing.T) {
 	var calls atomic.Int64
-	RegisterJob("cancel-iteration", func(ctx *Context, _ JobSpec) (RDDAny, error) {
+	RegisterPipeline("cancel-iteration", func(ctx *Context, _ JobSpec) (*RDD[int], error) {
 		return NewRDD[int](ctx, func() []Partition { return NewPartitions(1) }, nil, func(Partition) Iterator[int] {
 			return func() (int, bool) {
 				calls.Add(1)
@@ -172,7 +172,7 @@ func TestCancellationStopsWorkerIteration(t *testing.T) {
 func TestScheduleCanceledBeforeDispatch(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := ScheduleContext(ctx, JobSpec{TaskName: "sched-wc"}, []TaskRunner{localRunner{storeDir: t.TempDir()}}, ScheduleOpts{})
+	_, err := RunPipelineAnyContext(ctx, JobSpec{TaskName: "sched-wc"}, []TaskRunner{localRunner{storeDir: t.TempDir()}}, ScheduleOpts{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("got %v", err)
 	}
@@ -189,7 +189,7 @@ func (r staleMapRunner) Exec(task Task) (ExecResult, error) {
 }
 
 func TestRejectsStaleMapAttempt(t *testing.T) {
-	_, err := ScheduleWith(JobSpec{TaskName: "sched-wc", NumPartitions: 2}, []TaskRunner{staleMapRunner{inner: localRunner{storeDir: t.TempDir()}}}, ScheduleOpts{MaxAttempts: 1, MaxRecoveries: 1})
+	_, err := RunPipelineAnyContext(context.Background(), JobSpec{TaskName: "sched-wc", NumPartitions: 2}, []TaskRunner{staleMapRunner{inner: localRunner{storeDir: t.TempDir()}}}, ScheduleOpts{MaxAttempts: 1, MaxRecoveries: 1})
 	if err == nil || !strings.Contains(err.Error(), "stale or mismatched map attempt") {
 		t.Fatalf("stale completion accepted: %v", err)
 	}

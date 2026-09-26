@@ -846,29 +846,21 @@ func TestPartitionFileName(t *testing.T) {
 }
 
 func TestTaskRegistry(t *testing.T) {
-	RegisterTask("test-registry", func(ctx *Context) RDDAny {
-		data := []int{1, 2, 3}
-		return Parallelize(ctx, data, 1)
+	RegisterPipeline("test-registry", func(ctx *Context, spec JobSpec) (*RDD[int], error) {
+		return Parallelize(ctx, []int{1, 2, 3}, spec.NumPartitions), nil
 	})
-
-	fn, ok := GetTask("test-registry")
-	if !ok {
-		t.Fatal("expected to find registered task 'test-registry'")
+	result, err := RunPipelineLocal[int](JobSpec{TaskName: "test-registry", NumPartitions: 1})
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	ctx := newTestContext()
-	defer ctx.Stop()
-	rdd := fn(ctx)
-	result := Collect(rdd.(*RDD[int]))
 	if len(result) != 3 {
 		t.Fatalf("expected 3 elements, got %d", len(result))
 	}
 }
 
 func TestWorkerRunPartition(t *testing.T) {
-	RegisterTask("test-run-partition", func(ctx *Context) RDDAny {
-		data := []string{"a", "b", "c", "d", "e", "f"}
-		return Parallelize(ctx, data, 3)
+	RegisterPipeline("test-run-partition", func(ctx *Context, spec JobSpec) (*RDD[string], error) {
+		return Parallelize(ctx, []string{"a", "b", "c", "d", "e", "f"}, spec.NumPartitions), nil
 	})
 
 	tmpDir, err := os.MkdirTemp("", "gospark-test-runpart-*")
@@ -880,8 +872,11 @@ func TestWorkerRunPartition(t *testing.T) {
 	ctx := newTestContext()
 	defer ctx.Stop()
 
-	taskFunc, _ := GetTask("test-run-partition")
-	rddAny := taskFunc(ctx)
+	factory, _ := getJob("test-run-partition")
+	rddAny, err := factory(ctx, JobSpec{TaskName: "test-run-partition", NumPartitions: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	err = RunPartition(rddAny, 0, tmpDir)
 	if err != nil {
@@ -1098,18 +1093,20 @@ func TestSpillShuffleStillCorrect(t *testing.T) {
 }
 
 func TestRunPartitionOutOfRange(t *testing.T) {
-	RegisterTask("test-out-of-range", func(ctx *Context) RDDAny {
-		data := []int{1, 2, 3}
-		return Parallelize(ctx, data, 2)
+	RegisterPipeline("test-out-of-range", func(ctx *Context, spec JobSpec) (*RDD[int], error) {
+		return Parallelize(ctx, []int{1, 2, 3}, spec.NumPartitions), nil
 	})
 
 	ctx := newTestContext()
 	defer ctx.Stop()
 
-	taskFunc, _ := GetTask("test-out-of-range")
-	rddAny := taskFunc(ctx)
+	factory, _ := getJob("test-out-of-range")
+	rddAny, err := factory(ctx, JobSpec{TaskName: "test-out-of-range", NumPartitions: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	err := RunPartition(rddAny, 99, "/tmp/nonexistent")
+	err = RunPartition(rddAny, 99, "/tmp/nonexistent")
 	if err == nil {
 		t.Error("expected error for out-of-range partition index")
 	}

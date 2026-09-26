@@ -10,9 +10,6 @@ import (
 )
 
 func TestBundledPipelines(t *testing.T) {
-	if !spark.IsPipeline("k8s-wc") || !spark.IsPipeline("k8s-join") || !spark.IsPipeline("k8s-broadcast") || !spark.IsPipeline("k8s-text") || !spark.IsPipeline("k8s-sort") {
-		t.Fatal("bundled job was not registered as a pipeline")
-	}
 	var workers []spark.TaskRunner
 	for range 2 {
 		srv, addr, err := spark.ServeWorker(t.TempDir(), "127.0.0.1:0")

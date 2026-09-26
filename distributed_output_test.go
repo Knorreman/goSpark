@@ -16,7 +16,7 @@ import (
 )
 
 func init() {
-	RegisterJob("save-wordcount", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("save-wordcount", func(ctx *Context, spec JobSpec) (*RDD[Pair[string, int]], error) {
 		data := []string{"hello world", "hello spark", "world spark hello"}
 		words := FlatMap(Parallelize(ctx, data, 2), func(s string) []string { return strings.Fields(s) })
 		pairs := Map(words, func(w string) Pair[string, int] { return NewPair(w, 1) })
@@ -74,7 +74,7 @@ func TestScheduleSaveRetrySelectsOnlyAcceptedAttempt(t *testing.T) {
 	out := filepath.Join(dir, "output")
 	r := &retryAfterOutput{TaskRunner: localRunner{storeDir: t.TempDir()}}
 	spec := JobSpec{TaskName: "save-wordcount", Action: ActionSave, NumPartitions: 2, Params: map[string]string{"path": out}}
-	m, err := ScheduleSave(spec, []TaskRunner{r})
+	m, err := RunPipelineSave(spec, []TaskRunner{r}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,14 +101,14 @@ func TestScheduleSaveRetrySelectsOnlyAcceptedAttempt(t *testing.T) {
 			t.Fatalf("uncommitted root output: %s", e.Name())
 		}
 	}
-	if _, err := ScheduleSave(spec, []TaskRunner{r}); !errors.Is(err, ErrOutputCommitted) {
+	if _, err := RunPipelineSave(spec, []TaskRunner{r}, ""); !errors.Is(err, ErrOutputCommitted) {
 		t.Fatalf("second submission: %v", err)
 	}
 }
 
 func TestScheduleSaveAcrossWorkerProcesses(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "output")
-	m, err := ScheduleSave(JobSpec{TaskName: "save-wordcount", Action: ActionSave, NumPartitions: 2, Params: map[string]string{"path": out}}, []TaskRunner{startTestWorker(t), startTestWorker(t)})
+	m, err := RunPipelineSave(JobSpec{TaskName: "save-wordcount", Action: ActionSave, NumPartitions: 2, Params: map[string]string{"path": out}}, []TaskRunner{startTestWorker(t), startTestWorker(t)}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func (r rejectPartition) Exec(t Task) (ExecResult, error) {
 func TestScheduleSaveFailureDoesNotPublish(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "failed")
 	spec := JobSpec{TaskName: "save-wordcount", Action: ActionSave, NumPartitions: 2, Params: map[string]string{"path": dir}}
-	_, err := ScheduleSaveContext(t.Context(), spec, []TaskRunner{rejectPartition{localRunner{storeDir: t.TempDir()}}}, ScheduleOpts{MaxAttempts: 2})
+	_, err := RunPipelineSaveContext(t.Context(), spec, []TaskRunner{rejectPartition{localRunner{storeDir: t.TempDir()}}}, "", ScheduleOpts{MaxAttempts: 2})
 	if err == nil {
 		t.Fatal("expected partition write failure")
 	}
@@ -140,8 +140,8 @@ func TestScheduleSaveCanceledBeforeCommit(t *testing.T) {
 	uri := filepath.Join(t.TempDir(), "canceled")
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	_, err := ScheduleSaveContext(ctx, JobSpec{TaskName: "save-wordcount", Action: ActionSave, NumPartitions: 2, Params: map[string]string{"path": uri}},
-		[]TaskRunner{localRunner{storeDir: t.TempDir()}}, ScheduleOpts{OnTaskComplete: func(task Task, r ExecResult) error {
+	_, err := RunPipelineSaveContext(ctx, JobSpec{TaskName: "save-wordcount", Action: ActionSave, NumPartitions: 2, Params: map[string]string{"path": uri}},
+		[]TaskRunner{localRunner{storeDir: t.TempDir()}}, "", ScheduleOpts{OnTaskComplete: func(task Task, r ExecResult) error {
 			if r.Output != nil {
 				cancel()
 			}
@@ -166,8 +166,8 @@ func (r staleSaveRunner) Exec(task Task) (ExecResult, error) {
 }
 func TestStaleSaveAttemptNotCommitted(t *testing.T) {
 	uri := filepath.Join(t.TempDir(), "stale")
-	_, err := ScheduleSaveContext(t.Context(), JobSpec{TaskName: "save-wordcount", Action: ActionSave, NumPartitions: 2, Params: map[string]string{"path": uri}},
-		[]TaskRunner{staleSaveRunner{localRunner{storeDir: t.TempDir()}}}, ScheduleOpts{MaxAttempts: 1})
+	_, err := RunPipelineSaveContext(t.Context(), JobSpec{TaskName: "save-wordcount", Action: ActionSave, NumPartitions: 2, Params: map[string]string{"path": uri}},
+		[]TaskRunner{staleSaveRunner{localRunner{storeDir: t.TempDir()}}}, "", ScheduleOpts{MaxAttempts: 1})
 	if err == nil || !strings.Contains(err.Error(), "stale or mismatched save attempt") {
 		t.Fatalf("stale attempt accepted: %v", err)
 	}

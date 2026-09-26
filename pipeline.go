@@ -5,16 +5,6 @@ import (
 	"fmt"
 )
 
-var pipelineRegistry = map[string]bool{}
-
-// IsPipeline reports whether a compiled job supports RunPipeline. Dispatchers
-// can use it to retain support for older RegisterJob applications.
-func IsPipeline(name string) bool {
-	taskRegistryMu.Lock()
-	defer taskRegistryMu.Unlock()
-	return pipelineRegistry[name]
-}
-
 type pipelineReducer struct {
 	partial RDDAny
 	merge   func([]any) (any, error)
@@ -93,9 +83,13 @@ func ReduceBroadcast[T any](rdd *RDD[T], fn func(T, T) T) PipelineValue[T] {
 // RegisterPipeline registers one RDD graph for all phases of a distributed
 // pipeline. It must run in both the driver and worker binaries.
 func RegisterPipeline[T any](name string, build func(*Context, JobSpec) (*RDD[T], error)) {
-	RegisterJob(name, func(ctx *Context, spec JobSpec) (RDDAny, error) {
-		if spec.PipelinePhase != "final" && spec.PipelinePhase != "reduce" {
-			return nil, fmt.Errorf("pipeline %q must be submitted with RunPipeline", name)
+	registerJob(name, func(ctx *Context, spec JobSpec) (RDDAny, error) {
+		phase := spec.PipelinePhase
+		if phase == "" {
+			phase = "final"
+		}
+		if phase != "final" && phase != "reduce" {
+			return nil, fmt.Errorf("pipeline %q has unknown phase %q", name, spec.PipelinePhase)
 		}
 		ctx.pipeline = &pipelineState{spec: spec, values: map[int]any{}}
 		output, err := build(ctx, spec)
@@ -105,7 +99,7 @@ func RegisterPipeline[T any](name string, build func(*Context, JobSpec) (*RDD[T]
 		if output == nil {
 			return nil, fmt.Errorf("pipeline %q returned a nil RDD", name)
 		}
-		if spec.PipelinePhase == "reduce" {
+		if phase == "reduce" {
 			if spec.PipelineNode < 0 || spec.PipelineNode >= len(ctx.pipeline.reducers) {
 				return nil, fmt.Errorf("pipeline reduction %d does not exist", spec.PipelineNode)
 			}
@@ -113,9 +107,6 @@ func RegisterPipeline[T any](name string, build func(*Context, JobSpec) (*RDD[T]
 		}
 		return output, nil
 	})
-	taskRegistryMu.Lock()
-	pipelineRegistry[name] = true
-	taskRegistryMu.Unlock()
 }
 
 // RunPipeline evaluates reductions, broadcasts their values, then collects
@@ -147,11 +138,19 @@ func RunPipelineAny(spec JobSpec, workers []TaskRunner) ([]any, error) {
 }
 
 func RunPipelineAnyContext(ctx context.Context, spec JobSpec, workers []TaskRunner, opts ScheduleOpts) ([]any, error) {
-	prepared, err := preparePipeline(ctx, spec, workers, opts, ActionCollect)
+	action := spec.Action
+	if action == "" {
+		action = ActionCollect
+	}
+	if action == ActionSave {
+		return nil, fmt.Errorf("use RunPipelineSave for distributed save")
+	}
+	spec.Action = ""
+	prepared, err := preparePipeline(ctx, spec, workers, opts, action)
 	if err != nil {
 		return nil, err
 	}
-	return ScheduleContext(ctx, prepared, workers, opts)
+	return scheduleContext(ctx, prepared, workers, opts)
 }
 
 // RunPipelineSave writes each result partition through the retry-safe commit
@@ -161,6 +160,13 @@ func RunPipelineSave(spec JobSpec, workers []TaskRunner, output string) (OutputM
 }
 
 func RunPipelineSaveContext(ctx context.Context, spec JobSpec, workers []TaskRunner, output string, opts ScheduleOpts) (OutputManifest, error) {
+	if spec.Action != "" && spec.Action != ActionSave {
+		return OutputManifest{}, fmt.Errorf("pipeline save cannot run action %q", spec.Action)
+	}
+	spec.Action = ""
+	if output == "" {
+		output = spec.Params["path"]
+	}
 	if output == "" {
 		return OutputManifest{}, fmt.Errorf("pipeline output path is required")
 	}
@@ -174,7 +180,7 @@ func RunPipelineSaveContext(ctx context.Context, spec JobSpec, workers []TaskRun
 	if err != nil {
 		return OutputManifest{}, err
 	}
-	return ScheduleSaveContext(ctx, prepared, workers, opts)
+	return scheduleSaveContext(ctx, prepared, workers, opts)
 }
 
 func preparePipeline(ctx context.Context, spec JobSpec, workers []TaskRunner, opts ScheduleOpts, action string) (JobSpec, error) {
@@ -196,12 +202,15 @@ func preparePipeline(ctx context.Context, spec JobSpec, workers []TaskRunner, op
 		return JobSpec{}, err
 	}
 	spec.InputSplits = plan.InputSplits
-	build, _ := GetJob(spec.TaskName)
+	build, _ := getJob(spec.TaskName)
 	driver := NewContext(&Config{AppName: spec.TaskName, Master: MasterLocal, NumPartitions: spec.NumPartitions})
 	defer driver.Stop()
 	driver.installInputSplits(spec.InputSplits)
 	if _, err := build(driver, spec); err != nil {
 		return JobSpec{}, err
+	}
+	if driver.pipeline == nil {
+		return spec, nil
 	}
 	for index, reduction := range driver.pipeline.reducers {
 		phase := spec
@@ -209,7 +218,7 @@ func preparePipeline(ctx context.Context, spec JobSpec, workers []TaskRunner, op
 		phase.PipelineNode = index
 		phase.Action = ActionCollect
 		phase.Broadcasts = append([]Broadcast(nil), spec.Broadcasts...)
-		rows, err := ScheduleContext(ctx, phase, workers, opts)
+		rows, err := scheduleContext(ctx, phase, workers, opts)
 		if err != nil {
 			return JobSpec{}, err
 		}
@@ -235,7 +244,7 @@ func RunPipelineLocal[T any](spec JobSpec) ([]T, error) {
 	}
 	spec.PipelinePhase = "final"
 	spec.Action = ActionCollect
-	build, ok := GetJob(spec.TaskName)
+	build, ok := getJob(spec.TaskName)
 	if !ok {
 		return nil, fmt.Errorf("pipeline %q not registered", spec.TaskName)
 	}

@@ -7,7 +7,7 @@ import (
 )
 
 func TestPlanJobStableAcrossContexts(t *testing.T) {
-	RegisterJob("plan-wordcount", planWordCountJob)
+	RegisterPipeline("plan-wordcount", planWordCountJob)
 	spec := JobSpec{
 		TaskName:      "plan-wordcount",
 		Action:        ActionCollect,
@@ -40,7 +40,7 @@ func TestPlanJobStableAcrossContexts(t *testing.T) {
 }
 
 func TestPlanJobRejectsProtocolAndUnknowns(t *testing.T) {
-	RegisterJob("plan-wordcount", planWordCountJob)
+	RegisterPipeline("plan-wordcount", planWordCountJob)
 	_, err := PlanJob(JobSpec{TaskName: "plan-wordcount", ProtocolVersion: 99})
 	if err == nil {
 		t.Fatal("expected protocol mismatch error")
@@ -56,7 +56,7 @@ func TestPlanJobRejectsProtocolAndUnknowns(t *testing.T) {
 }
 
 func TestPlanJobDivergentConfig(t *testing.T) {
-	RegisterJob("plan-wordcount", planWordCountJob)
+	RegisterPipeline("plan-wordcount", planWordCountJob)
 	a, err := PlanJob(JobSpec{TaskName: "plan-wordcount", Action: ActionCollect, NumPartitions: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +83,7 @@ func TestPlanJobDivergentConfig(t *testing.T) {
 }
 
 func TestPlanJoinTwoShuffleInputs(t *testing.T) {
-	RegisterJob("plan-join", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("plan-join", func(ctx *Context, spec JobSpec) (*RDD[Pair[int, Pair[string, int]]], error) {
 		np := spec.NumPartitions
 		if np <= 0 {
 			np = 3
@@ -162,7 +162,7 @@ func TestPlanParallelizeNoShuffle(t *testing.T) {
 	}
 }
 
-func planWordCountJob(ctx *Context, spec JobSpec) (RDDAny, error) {
+func planWordCountJob(ctx *Context, spec JobSpec) (*RDD[Pair[string, int]], error) {
 	np := spec.NumPartitions
 	if np <= 0 {
 		np = 2

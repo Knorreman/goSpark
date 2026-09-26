@@ -86,7 +86,7 @@ func ExecuteTaskContext(execution context.Context, task Task) (result ExecResult
 	if task.Job.CacheIdentity != "" && task.Fingerprint != plan.Fingerprint {
 		return ExecResult{}, fmt.Errorf("reusable cache requires matching graph fingerprint")
 	}
-	factory, ok := GetJob(task.Job.TaskName)
+	factory, ok := getJob(task.Job.TaskName)
 	if !ok {
 		return ExecResult{}, fmt.Errorf("job %q not registered", task.Job.TaskName)
 	}

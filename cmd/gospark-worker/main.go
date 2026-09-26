@@ -18,9 +18,8 @@ import (
 )
 
 func init() {
-	spark.RegisterTask("sample-data", func(ctx *spark.Context) spark.RDDAny {
-		data := []string{"alpha", "beta", "gamma", "delta", "epsilon", "zeta"}
-		return spark.Parallelize(ctx, data, 3)
+	spark.RegisterPipeline("sample-data", func(ctx *spark.Context, spec spark.JobSpec) (*spark.RDD[string], error) {
+		return spark.Parallelize(ctx, []string{"alpha", "beta", "gamma", "delta", "epsilon", "zeta"}, spec.NumPartitions), nil
 	})
 	spark.RegisterPipeline("k8s-join", func(ctx *spark.Context, spec spark.JobSpec) (*spark.RDD[spark.Pair[int, spark.Pair[string, int]]], error) {
 		np := spec.NumPartitions
@@ -101,7 +100,7 @@ func main() {
 	case "serve":
 		runServe()
 	case "schedule":
-		runSchedule()
+		runRunPipelineAny()
 	case "create-bucket":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "bucket name required")
@@ -407,7 +406,7 @@ func runServe() {
 	select {}
 }
 
-func runSchedule() {
+func runRunPipelineAny() {
 	taskName := os.Getenv("GOSPARK_TASK")
 	if taskName == "" {
 		taskName = "k8s-wc"
@@ -492,14 +491,7 @@ func runSchedule() {
 			spec.Params = map[string]string{}
 		}
 		spec.Params["path"] = os.Getenv("GOSPARK_OUTPUT")
-		var manifest spark.OutputManifest
-		var err error
-		if spark.IsPipeline(taskName) {
-			spec.Action = ""
-			manifest, err = spark.RunPipelineSaveContext(context.Background(), spec, runners, spec.Params["path"], opts)
-		} else {
-			manifest, err = spark.ScheduleSaveContext(context.Background(), spec, runners, opts)
-		}
+		manifest, err := spark.RunPipelineSaveContext(context.Background(), spec, runners, spec.Params["path"], opts)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "save failed: %v\n", err)
 			os.Exit(1)
@@ -508,18 +500,7 @@ func runSchedule() {
 		fmt.Println("Schedule PASSED!")
 		return
 	}
-	var recs []any
-	var err error
-	if spark.IsPipeline(taskName) {
-		if action != spark.ActionCollect {
-			fmt.Fprintf(os.Stderr, "pipeline action %q is unsupported; use collect or save\n", action)
-			os.Exit(1)
-		}
-		spec.Action = ""
-		recs, err = spark.RunPipelineAnyContext(context.Background(), spec, runners, opts)
-	} else {
-		recs, err = spark.ScheduleWith(spec, runners, opts)
-	}
+	recs, err := spark.RunPipelineAnyContext(context.Background(), spec, runners, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "schedule failed: %v\n", err)
 		os.Exit(1)

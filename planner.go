@@ -47,7 +47,7 @@ func PlanJob(spec JobSpec) (*JobPlan, error) {
 	if spec.TaskName == "" {
 		return nil, fmt.Errorf("job spec missing task name")
 	}
-	factory, ok := GetJob(spec.TaskName)
+	factory, ok := getJob(spec.TaskName)
 	if !ok {
 		return nil, fmt.Errorf("job %q not registered", spec.TaskName)
 	}

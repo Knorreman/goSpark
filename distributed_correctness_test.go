@@ -8,13 +8,13 @@ import (
 )
 
 func init() {
-	RegisterJob("multi-stage-check", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("multi-stage-check", func(ctx *Context, spec JobSpec) (*RDD[Pair[string, int]], error) {
 		p := Parallelize(ctx, []Pair[string, int]{NewPair("a", 1), NewPair("b", 2), NewPair("a", 3)}, 2)
 		r := ReduceByKey(p, NewHashPartitioner(3), func(a, b int) int { return a + b })
 		r = Repartition(r, 4)
 		return SortByKey(r, func(a, b string) bool { return a < b }, true, 2), nil
 	})
-	RegisterJob("cogroup-check", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("cogroup-check", func(ctx *Context, spec JobSpec) (*RDD[string], error) {
 		a := Parallelize(ctx, []Pair[int, int]{NewPair(1, 2), NewPair(1, 3)}, 2)
 		b := Parallelize(ctx, []Pair[int, int]{NewPair(1, 4), NewPair(2, 5)}, 2)
 		return Map(Cogroup(a, b, NewHashPartitioner(3)), func(p Pair[int, Pair[[]int, []int]]) string {
@@ -36,7 +36,7 @@ func TestDistributedExactResults(t *testing.T) {
 		{"sched-join", []string{"{1 {a 10}}", "{1 {a 11}}", "{2 {b 20}}"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			recs, err := Schedule(JobSpec{TaskName: tc.name, Action: ActionCollect, NumPartitions: 2}, []TaskRunner{w1, w2})
+			recs, err := RunPipelineAny(JobSpec{TaskName: tc.name, Action: ActionCollect, NumPartitions: 2}, []TaskRunner{w1, w2})
 			if err != nil {
 				t.Fatal(err)
 			}

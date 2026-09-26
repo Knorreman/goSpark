@@ -13,13 +13,13 @@ var cachedInputCalls atomic.Int64
 var reusableOutputCalls atomic.Int64
 
 func init() {
-	RegisterJob("reusable-output", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("reusable-output", func(ctx *Context, spec JobSpec) (*RDD[int], error) {
 		return Map(Parallelize(ctx, []int{1, 2, 3, 4}, 4), func(v int) int {
 			reusableOutputCalls.Add(1)
 			return v * 10
 		}), nil
 	})
-	RegisterJob("cached-fanout", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("cached-fanout", func(ctx *Context, spec JobSpec) (*RDD[Pair[int, Pair[int, int]]], error) {
 		input := Parallelize(ctx, []Pair[int, int]{NewPair(1, 10), NewPair(2, 20), NewPair(3, 30)}, 3)
 		shared := Cache(Map(input, func(p Pair[int, int]) Pair[int, int] {
 			cachedInputCalls.Add(1)
@@ -51,7 +51,7 @@ func TestScheduleCacheAcrossJobsAndWorkerReplacement(t *testing.T) {
 	}
 	run := func(want int64) {
 		t.Helper()
-		recs, err := Schedule(spec, runners)
+		recs, err := RunPipelineAny(spec, runners)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -89,7 +89,7 @@ func TestScheduleCacheFingerprintSeparatesInputs(t *testing.T) {
 	second := first
 	second.Params = map[string]string{"version": "new"}
 	for _, spec := range []JobSpec{first, second, first} {
-		if _, err := Schedule(spec, []TaskRunner{worker}); err != nil {
+		if _, err := RunPipelineAny(spec, []TaskRunner{worker}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -107,7 +107,7 @@ func TestScheduleCacheReusesPreShuffleInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		recs, err := Schedule(spec, runners)
+		recs, err := RunPipelineAny(spec, runners)
 		if err != nil || len(recs) != 3 {
 			t.Fatalf("schedule %d: records=%v err=%v", i, recs, err)
 		}
@@ -118,7 +118,7 @@ func TestScheduleCacheReusesPreShuffleInput(t *testing.T) {
 	if err := cache.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Schedule(spec, runners); err != nil {
+	if _, err := RunPipelineAny(spec, runners); err != nil {
 		t.Fatal(err)
 	}
 	if got := cachedInputCalls.Load(); got != 6 {
@@ -185,7 +185,7 @@ func TestDistributedCacheReusedOnPreferredWorkers(t *testing.T) {
 	if len(cacheStage) != 2 {
 		t.Fatalf("expected two cached input branches, got %+v", cacheStage)
 	}
-	recs, err := Schedule(spec, runners)
+	recs, err := RunPipelineAny(spec, runners)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func TestCacheLocationDroppedAfterExecutorLoss(t *testing.T) {
 		kill:        func() { _ = srv.Close() },
 		stage:       first.ID,
 	}
-	recs, err := Schedule(spec, []TaskRunner{dead, &cacheWorker{b, 1, &mu, placed}})
+	recs, err := RunPipelineAny(spec, []TaskRunner{dead, &cacheWorker{b, 1, &mu, placed}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func TestReplacedWorkerInvalidatesCacheLocations(t *testing.T) {
 
 func TestDistributedCacheTwoProcesses(t *testing.T) {
 	updates := 0
-	recs, err := ScheduleWith(JobSpec{TaskName: "cached-fanout", Action: ActionCollect, NumPartitions: 3},
+	recs, err := RunPipelineAnyContext(context.Background(), JobSpec{TaskName: "cached-fanout", Action: ActionCollect, NumPartitions: 3},
 		[]TaskRunner{startTestWorker(t), startTestWorker(t)}, ScheduleOpts{OnTaskComplete: func(task Task, res ExecResult) error {
 			if res.Manifest != nil && len(res.Cached) > 0 {
 				updates++

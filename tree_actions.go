@@ -50,7 +50,7 @@ type treeAction struct {
 var treeActions = map[string]treeAction{}
 
 // RegisterTreeAggregate installs a named action in the driver and every worker.
-// The job factory must return an RDD[T]; use name as JobSpec.Action in Schedule.
+// The job factory must return an RDD[T]; use name as JobSpec.Action in RunPipelineAny.
 // Register it during application initialization, before scheduling tasks.
 func RegisterTreeAggregate[T, U any](name string, zero U, seqOp func(U, T) U, combOp func(U, U) U) {
 	registerRecord(zero)
@@ -68,7 +68,7 @@ func RegisterTreeAggregate[T, U any](name string, zero U, seqOp func(U, T) U, co
 	registerTreeAction(name, action)
 }
 
-// RegisterTreeReduce installs a named same-type reduction action for Schedule.
+// RegisterTreeReduce installs a named same-type reduction action for RunPipelineAny.
 // Empty partitions send no partial; an entirely empty job returns no records.
 func RegisterTreeReduce[T any](name string, fn func(T, T) T) {
 	action := treeAction{

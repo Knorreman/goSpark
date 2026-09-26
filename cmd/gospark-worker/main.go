@@ -18,11 +18,10 @@ import (
 )
 
 func init() {
-	spark.RegisterTask("sample-data", func(ctx *spark.Context) spark.RDDAny {
-		data := []string{"alpha", "beta", "gamma", "delta", "epsilon", "zeta"}
-		return spark.Parallelize(ctx, data, 3)
+	spark.RegisterPipeline("sample-data", func(ctx *spark.Context, spec spark.JobSpec) (*spark.RDD[string], error) {
+		return spark.Parallelize(ctx, []string{"alpha", "beta", "gamma", "delta", "epsilon", "zeta"}, spec.NumPartitions), nil
 	})
-	spark.RegisterJob("k8s-join", func(ctx *spark.Context, spec spark.JobSpec) (spark.RDDAny, error) {
+	spark.RegisterPipeline("k8s-join", func(ctx *spark.Context, spec spark.JobSpec) (*spark.RDD[spark.Pair[int, spark.Pair[string, int]]], error) {
 		np := spec.NumPartitions
 		if np <= 0 {
 			np = 2
@@ -35,7 +34,7 @@ func init() {
 		}, np)
 		return spark.Join(left, right, spark.NewHashPartitioner(np)), nil
 	})
-	spark.RegisterJob("k8s-wc", func(ctx *spark.Context, spec spark.JobSpec) (spark.RDDAny, error) {
+	spark.RegisterPipeline("k8s-wc", func(ctx *spark.Context, spec spark.JobSpec) (*spark.RDD[spark.Pair[string, int]], error) {
 		np := spec.NumPartitions
 		if np <= 0 {
 			np = 2
@@ -46,7 +45,7 @@ func init() {
 		pairs := spark.Map(words, func(w string) spark.Pair[string, int] { return spark.NewPair(w, 1) })
 		return spark.ReduceByKey(pairs, spark.NewHashPartitioner(np), func(a, b int) int { return a + b }), nil
 	})
-	spark.RegisterJob("k8s-broadcast", func(ctx *spark.Context, spec spark.JobSpec) (spark.RDDAny, error) {
+	spark.RegisterPipeline("k8s-broadcast", func(ctx *spark.Context, spec spark.JobSpec) (*spark.RDD[spark.Pair[string, int]], error) {
 		rates, err := spark.ReadBroadcast[map[string]int](spec, "rates")
 		if err != nil {
 			return nil, err
@@ -56,17 +55,17 @@ func init() {
 			return spark.NewPair(word, rates[word])
 		}), nil
 	})
-	spark.RegisterJob("k8s-text", func(ctx *spark.Context, spec spark.JobSpec) (spark.RDDAny, error) {
+	spark.RegisterPipeline("k8s-text", func(ctx *spark.Context, spec spark.JobSpec) (*spark.RDD[spark.Pair[string, int]], error) {
 		np := spec.NumPartitions
 		if np <= 0 {
 			np = 2
 		}
-		lines := spark.TextFile(ctx, spec.Params["path"], np)
+		lines := spark.TextFile(ctx, spec.Params["input"], np)
 		words := spark.FlatMap(lines, func(line string) []string { return strings.Fields(line) })
 		pairs := spark.Map(words, func(word string) spark.Pair[string, int] { return spark.NewPair(word, 1) })
 		return spark.ReduceByKey(pairs, spark.NewHashPartitioner(np), func(a, b int) int { return a + b }), nil
 	})
-	spark.RegisterJob("k8s-sort", func(ctx *spark.Context, spec spark.JobSpec) (spark.RDDAny, error) {
+	spark.RegisterPipeline("k8s-sort", func(ctx *spark.Context, spec spark.JobSpec) (*spark.RDD[spark.Pair[int, int]], error) {
 		np := spec.NumPartitions
 		if np <= 0 {
 			np = 2
@@ -101,7 +100,7 @@ func main() {
 	case "serve":
 		runServe()
 	case "schedule":
-		runSchedule()
+		runRunPipelineAny()
 	case "create-bucket":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "bucket name required")
@@ -407,7 +406,7 @@ func runServe() {
 	select {}
 }
 
-func runSchedule() {
+func runRunPipelineAny() {
 	taskName := os.Getenv("GOSPARK_TASK")
 	if taskName == "" {
 		taskName = "k8s-wc"
@@ -471,7 +470,7 @@ func runSchedule() {
 		if spec.Params == nil {
 			spec.Params = map[string]string{}
 		}
-		spec.Params["path"] = input
+		spec.Params["input"] = input
 	}
 	if taskName == "k8s-broadcast" {
 		if err := spark.AddBroadcast(&spec, "rates", map[string]int{"a": 3, "b": 5}); err != nil {
@@ -488,8 +487,11 @@ func runSchedule() {
 		return
 	}
 	if action == spark.ActionSave {
-		spec.Params = map[string]string{"path": os.Getenv("GOSPARK_OUTPUT")}
-		manifest, err := spark.ScheduleSaveContext(context.Background(), spec, runners, opts)
+		if spec.Params == nil {
+			spec.Params = map[string]string{}
+		}
+		spec.Params["path"] = os.Getenv("GOSPARK_OUTPUT")
+		manifest, err := spark.RunPipelineSaveContext(context.Background(), spec, runners, spec.Params["path"], opts)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "save failed: %v\n", err)
 			os.Exit(1)
@@ -498,7 +500,7 @@ func runSchedule() {
 		fmt.Println("Schedule PASSED!")
 		return
 	}
-	recs, err := spark.ScheduleWith(spec, runners, opts)
+	recs, err := spark.RunPipelineAnyContext(context.Background(), spec, runners, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "schedule failed: %v\n", err)
 		os.Exit(1)

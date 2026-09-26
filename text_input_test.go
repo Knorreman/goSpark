@@ -12,7 +12,7 @@ import (
 )
 
 func init() {
-	RegisterJob("dir-input-wc", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("dir-input-wc", func(ctx *Context, spec JobSpec) (*RDD[Pair[string, int]], error) {
 		lines := TextFile(ctx, spec.Params["path"], spec.NumPartitions)
 		words := FlatMap(lines, func(line string) []string {
 			if line == "" {
@@ -23,7 +23,7 @@ func init() {
 		pairs := Map(words, func(word string) Pair[string, int] { return NewPair(word, 1) })
 		return ReduceByKey(pairs, NewHashPartitioner(spec.NumPartitions), func(a, b int) int { return a + b }), nil
 	})
-	RegisterJob("shipped-text-lines", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("shipped-text-lines", func(ctx *Context, spec JobSpec) (*RDD[string], error) {
 		return TextFile(ctx, spec.Params["path"], spec.NumPartitions), nil
 	})
 }
@@ -78,7 +78,7 @@ func TestDistributedDirectoryInput(t *testing.T) {
 	dir := t.TempDir()
 	writeInput(t, filepath.Join(dir, "a.txt"), "alpha\n")
 	writeInput(t, filepath.Join(dir, "b.txt"), "alpha\nbeta\n")
-	recs, err := Schedule(JobSpec{
+	recs, err := RunPipelineAny(JobSpec{
 		TaskName: "dir-input-wc", Action: ActionCollect, NumPartitions: 2,
 		Params: map[string]string{"path": dir},
 	}, []TaskRunner{startTestWorker(t), startTestWorker(t)})
@@ -101,7 +101,7 @@ func TestDriverShippedSplitsIgnoreWorkerListing(t *testing.T) {
 	writeInput(t, filepath.Join(dir, "b.txt"), "alpha\nbeta\n")
 	worker, _ := startKillableWorkerEnv(t, "GOSPARK_TEST_HIDE_TEXT_LISTING=1")
 	runner := &splitCheckRunner{WorkerClient: worker}
-	recs, err := Schedule(JobSpec{
+	recs, err := RunPipelineAny(JobSpec{
 		TaskName: "dir-input-wc", Action: ActionCollect, NumPartitions: 2,
 		Params: map[string]string{"path": dir},
 	}, []TaskRunner{runner})
@@ -145,7 +145,7 @@ func TestDriverShippedByteRangeSplits(t *testing.T) {
 		want = append(want, line)
 	}
 	worker, _ := startKillableWorkerEnv(t, "GOSPARK_TEST_HIDE_TEXT_LISTING=1")
-	recs, err := Schedule(JobSpec{
+	recs, err := RunPipelineAny(JobSpec{
 		TaskName: "shipped-text-lines", Action: ActionCollect, NumPartitions: 3,
 		Params: map[string]string{"path": path},
 	}, []TaskRunner{&splitCheckRunner{WorkerClient: worker}})
@@ -167,7 +167,7 @@ func TestShippedSplitMissingFileFailsTask(t *testing.T) {
 	writeInput(t, gone, "alpha\n")
 	writeInput(t, filepath.Join(dir, "b.txt"), "beta\n")
 	runner := &deleteOnceRunner{inner: localRunner{storeDir: t.TempDir()}, path: gone}
-	_, err := ScheduleWith(JobSpec{
+	_, err := RunPipelineAnyContext(context.Background(), JobSpec{
 		TaskName: "dir-input-wc", Action: ActionCollect, NumPartitions: 2,
 		Params: map[string]string{"path": dir},
 	}, []TaskRunner{runner}, ScheduleOpts{MaxAttempts: 1})
@@ -187,7 +187,7 @@ func TestDriverShippedS3PrefixSplits(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &hideListingRunner{inner: localRunner{storeDir: t.TempDir()}}
-	recs, err := Schedule(JobSpec{
+	recs, err := RunPipelineAny(JobSpec{
 		TaskName: "dir-input-wc", Action: ActionCollect, NumPartitions: 2,
 		Params: map[string]string{"path": "s3://" + bucket + "/data/"},
 	}, []TaskRunner{runner})

@@ -75,7 +75,7 @@ func TestDiskShuffleMissingAndTruncated(t *testing.T) {
 
 func TestExecuteTaskWordCountNoRecompute(t *testing.T) {
 	var computes atomic.Int64
-	RegisterJob("exec-wc", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("exec-wc", func(ctx *Context, spec JobSpec) (*RDD[Pair[string, int]], error) {
 		np := spec.NumPartitions
 		lines := []string{"hello world", "hello spark", "world spark hello"}
 		rdd := Parallelize(ctx, lines, np)
@@ -89,7 +89,7 @@ func TestExecuteTaskWordCountNoRecompute(t *testing.T) {
 	spec := JobSpec{TaskName: "exec-wc", Action: ActionCollect, NumPartitions: 2}
 	ctx := NewContext(&Config{AppName: "exec-wc", Master: MasterLocal, NumPartitions: 2})
 	defer ctx.Stop()
-	rdd, _ := GetJob("exec-wc")
+	rdd, _ := getJob("exec-wc")
 	got, err := rdd(ctx, spec)
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +165,7 @@ func TestExecuteTaskWordCountNoRecompute(t *testing.T) {
 }
 
 func TestExecuteResultRequiresUpstream(t *testing.T) {
-	RegisterJob("exec-wc-up", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("exec-wc-up", func(ctx *Context, spec JobSpec) (*RDD[Pair[string, int]], error) {
 		pairs := Map(Parallelize(ctx, []string{"a b"}, spec.NumPartitions), func(s string) Pair[string, int] {
 			return NewPair(s, 1)
 		})

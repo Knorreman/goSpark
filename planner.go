@@ -47,7 +47,7 @@ func PlanJob(spec JobSpec) (*JobPlan, error) {
 	if spec.TaskName == "" {
 		return nil, fmt.Errorf("job spec missing task name")
 	}
-	factory, ok := GetJob(spec.TaskName)
+	factory, ok := getJob(spec.TaskName)
 	if !ok {
 		return nil, fmt.Errorf("job %q not registered", spec.TaskName)
 	}
@@ -334,6 +334,7 @@ func fingerprintPlan(plan *JobPlan) string {
 	fmt.Fprintf(h, "action=%s\n", spec.Action)
 	fmt.Fprintf(h, "np=%d\n", spec.NumPartitions)
 	fmt.Fprintf(h, "image=%s\n", spec.ImageDigest)
+	fmt.Fprintf(h, "pipeline=%s,%d\n", spec.PipelinePhase, spec.PipelineNode)
 	if spec.Params != nil {
 		keys := make([]string, 0, len(spec.Params))
 		for k := range spec.Params {

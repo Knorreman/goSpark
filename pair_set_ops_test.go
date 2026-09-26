@@ -15,12 +15,12 @@ var outerRight = []Pair[int, int]{
 }
 
 func init() {
-	RegisterJob("sched-full-outer", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("sched-full-outer", func(ctx *Context, spec JobSpec) (*RDD[Pair[int, Pair[*string, *int]]], error) {
 		left := Parallelize(ctx, outerLeft, 3)
 		right := Parallelize(ctx, outerRight, 2)
 		return FullOuterJoin(left, right, NewHashPartitioner(3)), nil
 	})
-	RegisterJob("sched-subtract-key", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("sched-subtract-key", func(ctx *Context, spec JobSpec) (*RDD[Pair[int, string]], error) {
 		left := Parallelize(ctx, outerLeft, 3)
 		right := Parallelize(ctx, outerRight, 2)
 		return SubtractByKey(left, right, NewHashPartitioner(3)), nil
@@ -100,7 +100,7 @@ func TestScheduleFullOuterJoinAndSubtractByKey(t *testing.T) {
 		{"sched-subtract-key", []string{`2:"left"`, `2:"left"`}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			recs, err := Schedule(JobSpec{TaskName: tc.name, Action: ActionCollect, NumPartitions: 3}, []TaskRunner{w1, w2})
+			recs, err := RunPipelineAny(JobSpec{TaskName: tc.name, Action: ActionCollect, NumPartitions: 3}, []TaskRunner{w1, w2})
 			if err != nil {
 				t.Fatal(err)
 			}

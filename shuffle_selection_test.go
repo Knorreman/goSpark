@@ -1,6 +1,7 @@
 package spark
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -23,7 +24,7 @@ func TestResultFetchesOnlyRequiredBuckets(t *testing.T) {
 			// Materialize each stage on disk with the normal scheduler, then
 			// replay the result tasks against an instrumented shuffle server.
 			var manifests []MapOutputManifest
-			_, err = ScheduleWith(spec, []TaskRunner{retainedShuffleRunner{localRunner{storeDir: t.TempDir()}}}, ScheduleOpts{
+			_, err = RunPipelineAnyContext(context.Background(), spec, []TaskRunner{retainedShuffleRunner{localRunner{storeDir: t.TempDir()}}}, ScheduleOpts{
 				OnTaskComplete: func(_ Task, r ExecResult) error {
 					if r.Manifest != nil {
 						manifests = append(manifests, *r.Manifest)

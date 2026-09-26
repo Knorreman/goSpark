@@ -1,6 +1,7 @@
 package spark
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -34,7 +35,7 @@ func (r *loseOutputRunner) Exec(task Task) (ExecResult, error) {
 
 func TestRecoveryRepairsMultiStageDAG(t *testing.T) {
 	r := &loseOutputRunner{dir: t.TempDir(), ids: map[string]bool{}}
-	got, err := ScheduleWith(JobSpec{TaskName: "multi-stage-check", Action: ActionCollect, NumPartitions: 2}, []TaskRunner{r}, ScheduleOpts{MaxAttempts: 1, MaxRecoveries: 4})
+	got, err := RunPipelineAnyContext(context.Background(), JobSpec{TaskName: "multi-stage-check", Action: ActionCollect, NumPartitions: 2}, []TaskRunner{r}, ScheduleOpts{MaxAttempts: 1, MaxRecoveries: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +82,7 @@ func TestRecoveryAfterWorkerProcessDeath(t *testing.T) {
 	counts := make(map[taskKey]int)
 	ids := make(map[string]bool)
 	var mu sync.Mutex
-	got, err := ScheduleWith(JobSpec{TaskName: "multi-stage-check", Action: ActionCollect, NumPartitions: 2}, []TaskRunner{r, b}, ScheduleOpts{MaxAttempts: 1, MaxRecoveries: 2, OnTaskComplete: func(task Task, res ExecResult) error {
+	got, err := RunPipelineAnyContext(context.Background(), JobSpec{TaskName: "multi-stage-check", Action: ActionCollect, NumPartitions: 2}, []TaskRunner{r, b}, ScheduleOpts{MaxAttempts: 1, MaxRecoveries: 2, OnTaskComplete: func(task Task, res ExecResult) error {
 		mu.Lock()
 		defer mu.Unlock()
 		counts[taskKey{task.StageID, task.PartitionID}]++

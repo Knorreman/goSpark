@@ -13,6 +13,15 @@ incomplete bucket manifests, and invalid task partitions fail explicitly.
 Fingerprints describe the existing planner's stage structure and JobSpec;
 they do not hash Go function bodies or guarantee arbitrary closures are equal.
 Use identical application builds and deterministic factories on all workers.
+`RegisterPipeline` permits one compiled factory to declare `ReduceBroadcast`
+dependencies on RDDs. `RunPipeline` executes one job per reduction (one
+partial per partition), merges each accepted result on the driver, and sends
+its value in the next job's broadcast spec. `RunPipeline` collects the final
+RDD; `RunPipelineSave` instead commits distributed partition output.
+`PipelineValue.Value()` must be called during transformation execution, not
+while constructing the factory; Go closures still are not serialized. Job IDs
+and retries are independent for each phase, and a reduction of an empty RDD
+fails. The final `Collect` still materializes results on the driver.
 Named broadcasts travel in the job spec as gob bytes, up to 8 MiB combined.
 Their hashes are part of the plan fingerprint. Read them in the factory; do
 not treat them as shuffled data.
@@ -64,7 +73,7 @@ paths. Recovery is bounded by `ScheduleOpts.MaxRecoveries` (default two). Once
 repaired, all result partitions are checked again before returning records.
 This is at-least-once task execution; external callbacks must be idempotent.
 
-`ScheduleContext` cancels pending dispatch and propagates deadlines over worker
+`RunPipelineContext` cancels pending dispatch and propagates deadlines over worker
 HTTP RPCs. The driver probes worker health while a task runs; heartbeat failure
 cancels the request. Workers receive the HTTP request context through
 `Context.TaskContext()`, check cancellation between iterator records and shuffle
@@ -89,7 +98,7 @@ calls, opt in on the driver:
 ```go
 cache := NewScheduleCache(workers)
 spec, err := cache.Persist("input-v1", JobSpec{TaskName: "my-job", Action: ActionCollect})
-// Handle err, then call Schedule(spec, workers) repeatedly.
+// Handle err, then call RunPipeline(spec, workers) repeatedly.
 // When finished: cache.Unpersist(ctx, "input-v1") or cache.Stop(ctx).
 ```
 
@@ -123,9 +132,8 @@ executor discovery remain future work.
 
 ## Distributed output commits
 
-Use `ScheduleSave(JobSpec{TaskName: "...", Action: ActionSave,
-Params: map[string]string{"path": "s3://bucket/output"}}, workers)` to run a
-registered compiled job. Each worker writes its result partition to a unique
+Use `RunPipelineSave(JobSpec{TaskName: "..."}, workers, "s3://bucket/output")`
+to run a registered pipeline. Each worker writes its result partition to a unique
 `_temporary/<job-id>/stage-<id>/part-<index>-attempt-<number>` path and closes
 the writer before reporting a digest and byte count. The driver checks every
 selected attempt, then conditionally creates `_SUCCESS` as a JSON manifest.
@@ -184,8 +192,8 @@ lazily. ReduceByKey map-side combining flushes bounded batches. Grouping support
 value keys (strings, numbers, booleans, structs, arrays); process-local pointer/
 channel keys and NaNs are rejected.
 
-`Collect`, `Schedule` with collect, explicit caching, and user-created slices still
-materialize data by design. Use `ScheduleSave`, iterator consumption, or Count
+`Collect`, `RunPipeline`, explicit caching, and user-created slices still
+materialize data by design. Use `RunPipelineSave`, iterator consumption, or Count
 for outputs larger than memory. Sort/fetch scratch files are owned by the
 Context and cleaned on Stop (task contexts Stop on both success and failure);
 published map outputs must remain for reducers.

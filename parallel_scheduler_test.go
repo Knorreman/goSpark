@@ -52,7 +52,7 @@ func TestScheduleRunsIndependentPartitionsOnSeparateWorkers(t *testing.T) {
 	}
 	finished := make(chan outcome, 1)
 	go func() {
-		recs, err := Schedule(JobSpec{TaskName: "sched-wc", Action: ActionCollect, NumPartitions: 2}, []TaskRunner{a, b})
+		recs, err := RunPipelineAny(JobSpec{TaskName: "sched-wc", Action: ActionCollect, NumPartitions: 2}, []TaskRunner{a, b})
 		finished <- outcome{recs, err}
 	}()
 	for i := 0; i < 2; i++ {
@@ -93,7 +93,7 @@ func TestParallelScheduleCancelWaitsForTasks(t *testing.T) {
 	runner := &cancellableRunner{started: started, ended: ended}
 	finished := make(chan error, 1)
 	go func() {
-		_, err := ScheduleContext(ctx, JobSpec{TaskName: "sched-wc", NumPartitions: 2}, []TaskRunner{runner, runner}, ScheduleOpts{})
+		_, err := RunPipelineAnyContext(ctx, JobSpec{TaskName: "sched-wc", NumPartitions: 2}, []TaskRunner{runner, runner}, ScheduleOpts{})
 		finished <- err
 	}()
 	for i := 0; i < 2; i++ {

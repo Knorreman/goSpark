@@ -7,7 +7,7 @@ import (
 )
 
 func init() {
-	RegisterJob("broadcast-lookup", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("broadcast-lookup", func(ctx *Context, spec JobSpec) (*RDD[Pair[string, int]], error) {
 		table, err := ReadBroadcast[map[string]int](spec, "rates")
 		if err != nil {
 			return nil, err
@@ -24,7 +24,7 @@ func TestBroadcastLookupAcrossWorkers(t *testing.T) {
 	if err := AddBroadcast(&spec, "rates", map[string]int{"a": 3, "b": 5}); err != nil {
 		t.Fatal(err)
 	}
-	recs, err := Schedule(spec, []TaskRunner{startTestWorker(t), startTestWorker(t)})
+	recs, err := RunPipelineAny(spec, []TaskRunner{startTestWorker(t), startTestWorker(t)})
 	if err != nil {
 		t.Fatal(err)
 	}

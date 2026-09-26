@@ -16,8 +16,6 @@ const (
 	ActionSave    = "save"
 )
 
-type TaskFunc func(ctx *Context) RDDAny
-
 type JobSpec struct {
 	TaskName           string            `json:"task_name"`
 	CacheIdentity      string            `json:"cache_identity,omitempty"`
@@ -29,6 +27,8 @@ type JobSpec struct {
 	NumPartitions      int               `json:"num_partitions,omitempty"`
 	ProtocolVersion    int               `json:"protocol_version"`
 	ImageDigest        string            `json:"image_digest,omitempty"`
+	PipelinePhase      string            `json:"pipeline_phase,omitempty"`
+	PipelineNode       int               `json:"pipeline_node,omitempty"`
 	accumulatorContext *Context
 }
 
@@ -45,7 +45,6 @@ type ActionFunc func(rdd RDDAny, spec JobSpec) error
 
 var (
 	taskRegistryMu sync.Mutex
-	taskRegistry   = make(map[string]TaskFunc)
 	jobRegistry    = make(map[string]JobFactory)
 	actionRegistry = make(map[string]ActionFunc)
 	builtinsOnce   sync.Once
@@ -92,29 +91,13 @@ func ensureBuiltinActions() {
 	})
 }
 
-func RegisterTask(name string, fn TaskFunc) {
-	taskRegistryMu.Lock()
-	taskRegistry[name] = fn
-	taskRegistryMu.Unlock()
-	RegisterJob(name, func(ctx *Context, spec JobSpec) (RDDAny, error) {
-		return fn(ctx), nil
-	})
-}
-
-func GetTask(name string) (TaskFunc, bool) {
-	taskRegistryMu.Lock()
-	fn, ok := taskRegistry[name]
-	taskRegistryMu.Unlock()
-	return fn, ok
-}
-
-func RegisterJob(name string, fn JobFactory) {
+func registerJob(name string, fn JobFactory) {
 	taskRegistryMu.Lock()
 	jobRegistry[name] = fn
 	taskRegistryMu.Unlock()
 }
 
-func GetJob(name string) (JobFactory, bool) {
+func getJob(name string) (JobFactory, bool) {
 	taskRegistryMu.Lock()
 	fn, ok := jobRegistry[name]
 	taskRegistryMu.Unlock()
@@ -135,18 +118,21 @@ func GetAction(name string) (ActionFunc, bool) {
 	return fn, ok
 }
 
-func WorkerRunPartition(taskName string, partitionIndex int, outputPath string) error {
-	taskFunc, ok := GetTask(taskName)
+func registeredRDD(ctx *Context, name string, partitions int) (RDDAny, error) {
+	factory, ok := getJob(name)
 	if !ok {
-		return fmt.Errorf("task %q not registered", taskName)
+		return nil, fmt.Errorf("pipeline %q not registered", name)
 	}
-	ctx := NewContext(&Config{
-		Master:        MasterLocal,
-		NumPartitions: 0,
-	})
-	defer ctx.Stop()
+	return factory(ctx, JobSpec{TaskName: name, NumPartitions: partitions, PipelinePhase: "final"})
+}
 
-	rddAny := taskFunc(ctx)
+func WorkerRunPartition(taskName string, partitionIndex int, outputPath string) error {
+	ctx := NewContext(&Config{Master: MasterLocal})
+	defer ctx.Stop()
+	rddAny, err := registeredRDD(ctx, taskName, 0)
+	if err != nil {
+		return err
+	}
 	return RunPartition(rddAny, partitionIndex, outputPath)
 }
 
@@ -183,16 +169,12 @@ type K8sDistributedSaveConfig struct {
 }
 
 func K8sDistributedSave(ctx *Context, cfg K8sDistributedSaveConfig) error {
-	taskFunc, ok := GetTask(cfg.TaskName)
-	if !ok {
-		return fmt.Errorf("task %q not registered", cfg.TaskName)
+	tempCtx := NewContext(&Config{Master: MasterLocal, NumPartitions: cfg.Workers})
+	rddAny, err := registeredRDD(tempCtx, cfg.TaskName, cfg.Workers)
+	if err != nil {
+		tempCtx.Stop()
+		return err
 	}
-
-	tempCtx := NewContext(&Config{
-		Master:        MasterLocal,
-		NumPartitions: cfg.Workers,
-	})
-	rddAny := taskFunc(tempCtx)
 	computeShuffleStages(rddAny)
 	numPartitions := len(rddAny.Partitions())
 	tempCtx.Stop()

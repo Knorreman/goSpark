@@ -77,16 +77,16 @@ type ScheduleOpts struct {
 	OnRepair       func(FetchError)
 }
 
-func Schedule(spec JobSpec, runners []TaskRunner) ([]any, error) {
-	return ScheduleWith(spec, runners, ScheduleOpts{})
+func schedule(spec JobSpec, runners []TaskRunner) ([]any, error) {
+	return scheduleWith(spec, runners, ScheduleOpts{})
 }
-func ScheduleWith(spec JobSpec, runners []TaskRunner, opts ScheduleOpts) ([]any, error) {
-	return ScheduleContext(context.Background(), spec, runners, opts)
+func scheduleWith(spec JobSpec, runners []TaskRunner, opts ScheduleOpts) ([]any, error) {
+	return scheduleContext(context.Background(), spec, runners, opts)
 }
 
-func ScheduleContext(ctx context.Context, spec JobSpec, runners []TaskRunner, opts ScheduleOpts) ([]any, error) {
+func scheduleContext(ctx context.Context, spec JobSpec, runners []TaskRunner, opts ScheduleOpts) ([]any, error) {
 	if spec.Action == ActionSave {
-		return nil, fmt.Errorf("use ScheduleSaveContext for distributed save")
+		return nil, fmt.Errorf("use RunPipelineSave for distributed save")
 	}
 	results, _, _, err := scheduleResults(ctx, spec, runners, opts)
 	if err != nil {
@@ -102,13 +102,13 @@ func ScheduleContext(ctx context.Context, spec JobSpec, runners []TaskRunner, op
 	return records, nil
 }
 
-func ScheduleSave(spec JobSpec, runners []TaskRunner) (OutputManifest, error) {
-	return ScheduleSaveContext(context.Background(), spec, runners, ScheduleOpts{})
+func scheduleSave(spec JobSpec, runners []TaskRunner) (OutputManifest, error) {
+	return scheduleSaveContext(context.Background(), spec, runners, ScheduleOpts{})
 }
 
-// ScheduleSaveContext runs the same stage/recovery scheduler as Collect but
+// scheduleSaveContext runs the same stage/recovery scheduler as Collect but
 // publishes one _SUCCESS manifest only after all selected attempts are verified.
-func ScheduleSaveContext(ctx context.Context, spec JobSpec, runners []TaskRunner, opts ScheduleOpts) (OutputManifest, error) {
+func scheduleSaveContext(ctx context.Context, spec JobSpec, runners []TaskRunner, opts ScheduleOpts) (OutputManifest, error) {
 	if spec.Action != ActionSave || spec.Params["path"] == "" {
 		return OutputManifest{}, fmt.Errorf("save requires action=save and params.path")
 	}

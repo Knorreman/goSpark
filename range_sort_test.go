@@ -1,6 +1,7 @@
 package spark
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"reflect"
@@ -10,7 +11,7 @@ import (
 )
 
 func init() {
-	RegisterJob("range-sort-check", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("range-sort-check", func(ctx *Context, spec JobSpec) (*RDD[Pair[int, int]], error) {
 		var input []Pair[int, int]
 		for i := 127; i >= 0; i-- {
 			input = append(input, NewPair(i, i*10))
@@ -20,7 +21,7 @@ func init() {
 		}
 		return SortByKey(Parallelize(ctx, input, 4), func(a, b int) bool { return a < b }, spec.Params["descending"] != "true", 4), nil
 	})
-	RegisterJob("range-sort-edge", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("range-sort-edge", func(ctx *Context, spec JobSpec) (*RDD[Pair[int, int]], error) {
 		var input []Pair[int, int]
 		if spec.Params["empty"] != "true" {
 			for i := 0; i < 500; i++ {
@@ -40,7 +41,7 @@ func TestDistributedRangeSortPartitions(t *testing.T) {
 			bucketRecords := make([]int, 4)
 			mapTasks := 0
 			parts := make(map[int][]any)
-			recs, err := ScheduleWith(spec, []TaskRunner{startTestWorker(t), startTestWorker(t)}, ScheduleOpts{
+			recs, err := RunPipelineAnyContext(context.Background(), spec, []TaskRunner{startTestWorker(t), startTestWorker(t)}, ScheduleOpts{
 				OnTaskComplete: func(task Task, result ExecResult) error {
 					mu.Lock()
 					defer mu.Unlock()
@@ -141,7 +142,7 @@ func TestRangeSortSampleRetryAndMissingBounds(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "missing sampled boundaries") {
 		t.Fatalf("unsampled shuffle was accepted: %v", err)
 	}
-	recs, err := ScheduleWith(spec, []TaskRunner{&failFirstSample{inner: localRunner{storeDir: t.TempDir()}}}, ScheduleOpts{MaxAttempts: 2})
+	recs, err := RunPipelineAnyContext(context.Background(), spec, []TaskRunner{&failFirstSample{inner: localRunner{storeDir: t.TempDir()}}}, ScheduleOpts{MaxAttempts: 2})
 	if err != nil || len(recs) != 135 {
 		t.Fatalf("sample retry failed: count=%d err=%v", len(recs), err)
 	}
@@ -152,7 +153,7 @@ func TestRangeSortEmptyAndSkewedKeys(t *testing.T) {
 		spec := JobSpec{TaskName: "range-sort-edge", Action: ActionCollect, NumPartitions: 4,
 			Params: map[string]string{"empty": fmt.Sprint(empty)}}
 		partitions := map[int]int{}
-		recs, err := ScheduleWith(spec, []TaskRunner{startTestWorker(t), startTestWorker(t)}, ScheduleOpts{
+		recs, err := RunPipelineAnyContext(context.Background(), spec, []TaskRunner{startTestWorker(t), startTestWorker(t)}, ScheduleOpts{
 			OnTaskComplete: func(task Task, result ExecResult) error {
 				if result.Kind == StageResult {
 					partitions[task.PartitionID] = len(result.Records)
@@ -174,7 +175,7 @@ func TestRangeSortEmptyAndSkewedKeys(t *testing.T) {
 			t.Fatalf("equal keys crossed a range boundary: %v", partitions)
 		}
 		ctx := NewContext(&Config{AppName: "range-sort-edge", Master: MasterLocal, NumPartitions: 4})
-		factory, _ := GetJob(spec.TaskName)
+		factory, _ := getJob(spec.TaskName)
 		rdd, err := factory(ctx, spec)
 		if err != nil {
 			t.Fatal(err)
@@ -217,7 +218,7 @@ func (r *loseBeforeSample) Exec(task Task) (ExecResult, error) {
 func TestRangeSortRepairsLostMapDuringSampling(t *testing.T) {
 	runner := &loseBeforeSample{inner: localRunner{storeDir: t.TempDir()}}
 	repairs := 0
-	recs, err := ScheduleWith(JobSpec{TaskName: "multi-stage-check", Action: ActionCollect, NumPartitions: 2},
+	recs, err := RunPipelineAnyContext(context.Background(), JobSpec{TaskName: "multi-stage-check", Action: ActionCollect, NumPartitions: 2},
 		[]TaskRunner{runner}, ScheduleOpts{MaxRecoveries: 3, OnRepair: func(FetchError) { repairs++ }})
 	if err != nil {
 		t.Fatal(err)

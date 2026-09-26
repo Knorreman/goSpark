@@ -144,7 +144,7 @@ func TestZipPartitions(t *testing.T) {
 }
 
 func init() {
-	RegisterJob("zip-index-check", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("zip-index-check", func(ctx *Context, spec JobSpec) (*RDD[Pair[int, int64]], error) {
 		input := Parallelize(ctx, []int{10, 11, 12, 13, 14, 15, 16}, 3)
 		return ZipWithIndex(Filter(input, func(n int) bool { return n != 12 && n != 13 })), nil
 	})
@@ -152,7 +152,7 @@ func init() {
 
 func TestZipWithIndexTwoWorkers(t *testing.T) {
 	w1, w2 := startTestWorker(t), startTestWorker(t)
-	records, err := Schedule(JobSpec{TaskName: "zip-index-check", Action: ActionCollect, NumPartitions: 3}, []TaskRunner{w1, w2})
+	records, err := RunPipelineAny(JobSpec{TaskName: "zip-index-check", Action: ActionCollect, NumPartitions: 3}, []TaskRunner{w1, w2})
 	if err != nil {
 		t.Fatal(err)
 	}

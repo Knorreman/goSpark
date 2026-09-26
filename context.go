@@ -31,6 +31,7 @@ type Context struct {
 	accumulators     accumulatorSet
 	textSeq          int
 	textInputs       map[textInputKey][]InputSplit
+	pipeline         *pipelineState
 }
 
 func NewContext(conf *Config) *Context {

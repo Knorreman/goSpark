@@ -1,6 +1,7 @@
 package spark
 
 import (
+	"context"
 	"reflect"
 	"testing"
 )
@@ -28,7 +29,7 @@ func treeComb(a, b map[string]int) map[string]int {
 }
 
 func init() {
-	RegisterJob("tree-test", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("tree-test", func(ctx *Context, spec JobSpec) (*RDD[int], error) {
 		if spec.Params["empty"] == "true" {
 			return NewRDD(ctx,
 				func() []Partition { return []Partition{NewPartition(0), NewPartition(1)} }, nil,
@@ -78,7 +79,7 @@ func TestTreeActionsTwoWorkers(t *testing.T) {
 	} {
 		t.Run(tc.action, func(t *testing.T) {
 			sizes := make([]int, 3)
-			results, err := ScheduleWith(JobSpec{TaskName: "tree-test", Action: tc.action, NumPartitions: 3},
+			results, err := RunPipelineAnyContext(context.Background(), JobSpec{TaskName: "tree-test", Action: tc.action, NumPartitions: 3},
 				[]TaskRunner{w1, w2}, ScheduleOpts{OnTaskComplete: func(task Task, res ExecResult) error {
 					if res.Kind == StageResult {
 						sizes[task.PartitionID] = len(res.Records)
@@ -100,7 +101,7 @@ func TestTreeActionsTwoWorkers(t *testing.T) {
 		{"tree-test-aggregate", []any{map[string]int{}}},
 		{"tree-test-reduce", nil},
 	} {
-		got, err := Schedule(JobSpec{TaskName: "tree-test", Action: tc.action, Params: map[string]string{"empty": "true"}}, []TaskRunner{w1, w2})
+		got, err := RunPipelineAny(JobSpec{TaskName: "tree-test", Action: tc.action, Params: map[string]string{"empty": "true"}}, []TaskRunner{w1, w2})
 		if err != nil || !reflect.DeepEqual(got, tc.want) {
 			t.Fatalf("empty %s: got %v, err %v; want %v", tc.action, got, err, tc.want)
 		}

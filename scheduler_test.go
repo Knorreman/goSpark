@@ -2,6 +2,7 @@ package spark
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -32,7 +33,7 @@ func TestMain(m *testing.M) {
 }
 
 func registerSchedWC() {
-	RegisterJob("sched-join", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("sched-join", func(ctx *Context, spec JobSpec) (*RDD[Pair[int, Pair[string, int]]], error) {
 		np := spec.NumPartitions
 		if np <= 0 {
 			np = 2
@@ -45,7 +46,7 @@ func registerSchedWC() {
 		}, np)
 		return Join(left, right, NewHashPartitioner(np)), nil
 	})
-	RegisterJob("sched-wc", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("sched-wc", func(ctx *Context, spec JobSpec) (*RDD[Pair[string, int]], error) {
 		np := spec.NumPartitions
 		if np <= 0 {
 			np = 2
@@ -62,7 +63,7 @@ func TestScheduleLocalMatchesCollect(t *testing.T) {
 	spec := JobSpec{TaskName: "sched-wc", Action: ActionCollect, NumPartitions: 2}
 	ctx := NewContext(&Config{AppName: "sched-wc", Master: MasterLocal, NumPartitions: 2})
 	defer ctx.Stop()
-	factory, _ := GetJob("sched-wc")
+	factory, _ := getJob("sched-wc")
 	rdd, err := factory(ctx, spec)
 	if err != nil {
 		t.Fatal(err)
@@ -71,7 +72,7 @@ func TestScheduleLocalMatchesCollect(t *testing.T) {
 	for _, p := range Collect(rdd.(*RDD[Pair[string, int]])) {
 		want[p.Key] = p.Value
 	}
-	gotRecs, err := Schedule(spec, []TaskRunner{localRunner{storeDir: t.TempDir()}})
+	gotRecs, err := RunPipelineAny(spec, []TaskRunner{localRunner{storeDir: t.TempDir()}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +95,7 @@ func TestScheduleTwoProcessesHTTPShuffle(t *testing.T) {
 	spec := JobSpec{TaskName: "sched-wc", Action: ActionCollect, NumPartitions: 2}
 	ctx := NewContext(&Config{AppName: "sched-wc", Master: MasterLocal, NumPartitions: 2})
 	defer ctx.Stop()
-	factory, _ := GetJob("sched-wc")
+	factory, _ := getJob("sched-wc")
 	rdd, err := factory(ctx, spec)
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +107,7 @@ func TestScheduleTwoProcessesHTTPShuffle(t *testing.T) {
 
 	w1 := startTestWorker(t)
 	w2 := startTestWorker(t)
-	gotRecs, err := Schedule(spec, []TaskRunner{w1, w2})
+	gotRecs, err := RunPipelineAny(spec, []TaskRunner{w1, w2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +195,7 @@ func (f *failOnceRunner) Exec(task Task) (ExecResult, error) {
 func TestScheduleRetriesThenSucceeds(t *testing.T) {
 	spec := JobSpec{TaskName: "sched-wc", Action: ActionCollect, NumPartitions: 2}
 	inner := localRunner{storeDir: t.TempDir()}
-	got, err := ScheduleWith(spec, []TaskRunner{&failOnceRunner{inner: inner}}, ScheduleOpts{MaxAttempts: 3})
+	got, err := RunPipelineAnyContext(context.Background(), spec, []TaskRunner{&failOnceRunner{inner: inner}}, ScheduleOpts{MaxAttempts: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +246,7 @@ func (deadRunner) Alive() bool                   { return false }
 
 func TestScheduleSkipsDeadWorker(t *testing.T) {
 	spec := JobSpec{TaskName: "sched-wc", Action: ActionCollect, NumPartitions: 2}
-	got, err := Schedule(spec, []TaskRunner{deadRunner{}, localRunner{storeDir: t.TempDir()}})
+	got, err := RunPipelineAny(spec, []TaskRunner{deadRunner{}, localRunner{storeDir: t.TempDir()}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,13 +259,13 @@ func TestScheduleJoinMatchesCollect(t *testing.T) {
 	spec := JobSpec{TaskName: "sched-join", Action: ActionCollect, NumPartitions: 2}
 	ctx := NewContext(&Config{AppName: "sched-join", Master: MasterLocal, NumPartitions: 2})
 	defer ctx.Stop()
-	factory, _ := GetJob("sched-join")
+	factory, _ := getJob("sched-join")
 	rdd, err := factory(ctx, spec)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := Collect(rdd.(*RDD[Pair[int, Pair[string, int]]]))
-	gotRecs, err := Schedule(spec, []TaskRunner{localRunner{storeDir: t.TempDir()}, localRunner{storeDir: t.TempDir()}})
+	gotRecs, err := RunPipelineAny(spec, []TaskRunner{localRunner{storeDir: t.TempDir()}, localRunner{storeDir: t.TempDir()}})
 	if err != nil {
 		t.Fatal(err)
 	}

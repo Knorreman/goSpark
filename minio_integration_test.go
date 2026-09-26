@@ -46,7 +46,7 @@ func TestMinIODistributedSave(t *testing.T) {
 	uri := "s3://" + bucket + "/committed"
 	spec := JobSpec{TaskName: "save-wordcount", Action: ActionSave, NumPartitions: 2, Params: map[string]string{"path": uri}}
 	r := &retryAfterOutput{TaskRunner: startTestWorker(t)}
-	m, err := ScheduleSave(spec, []TaskRunner{r, startTestWorker(t)})
+	m, err := RunPipelineSave(spec, []TaskRunner{r, startTestWorker(t)}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestMinIODistributedSave(t *testing.T) {
 	if !seenMarker {
 		t.Fatal("missing S3 success marker")
 	}
-	if _, err := ScheduleSave(spec, []TaskRunner{startTestWorker(t)}); !errors.Is(err, ErrOutputCommitted) {
+	if _, err := RunPipelineSave(spec, []TaskRunner{startTestWorker(t)}, ""); !errors.Is(err, ErrOutputCommitted) {
 		t.Fatalf("duplicate job: %v", err)
 	}
 	corruptURI := "s3://" + bucket + "/corrupt"

@@ -132,7 +132,7 @@ func TestJoinProducesPairsLazily(t *testing.T) {
 }
 
 func TestGroupLimitIsTaskError(t *testing.T) {
-	RegisterJob("bounded-group-limit", func(ctx *Context, spec JobSpec) (RDDAny, error) {
+	RegisterPipeline("bounded-group-limit", func(ctx *Context, spec JobSpec) (*RDD[Pair[string, []int]], error) {
 		ctx.Config().MaxGroupBytes = 256
 		p := make([]Pair[string, int], 100)
 		for i := range p {
@@ -140,7 +140,7 @@ func TestGroupLimitIsTaskError(t *testing.T) {
 		}
 		return GroupByKey(Parallelize(ctx, p, 1), NewHashPartitioner(1)), nil
 	})
-	_, err := Schedule(JobSpec{TaskName: "bounded-group-limit", Action: ActionCollect, NumPartitions: 1}, []TaskRunner{localRunner{storeDir: t.TempDir()}})
+	_, err := RunPipelineAny(JobSpec{TaskName: "bounded-group-limit", Action: ActionCollect, NumPartitions: 1}, []TaskRunner{localRunner{storeDir: t.TempDir()}})
 	if err == nil || !strings.Contains(err.Error(), "MaxGroupBytes") {
 		t.Fatalf("got %v", err)
 	}

@@ -60,7 +60,7 @@ func TestPipePerPartition(t *testing.T) {
 }
 
 func TestPipeNonzeroExitFailsTask(t *testing.T) {
-	RegisterJob("pipe-failure-test", func(ctx *Context, _ JobSpec) (RDDAny, error) {
+	RegisterPipeline("pipe-failure-test", func(ctx *Context, _ JobSpec) (*RDD[string], error) {
 		return Pipe(Parallelize(ctx, []string{"line"}, 1), "cat >/dev/null; echo failure >&2; exit 7"), nil
 	})
 	spec := JobSpec{TaskName: "pipe-failure-test", Action: ActionCollect, NumPartitions: 1}

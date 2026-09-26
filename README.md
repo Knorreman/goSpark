@@ -400,6 +400,12 @@ final RDD. Use `RunPipelineLocal[float64](spec)` without workers. Each phase
 can retry independently; an empty reduction is an error. The same factory
 must still be compiled into driver and worker binaries.
 
+For large final results, use `RunPipelineSave(spec, workers, "s3://bucket/output")`
+instead of `RunPipeline[T]`: the driver commits the result partitions without
+collecting every record. The bundled `gospark-worker schedule` command now
+dispatches its compiled jobs through the pipeline API for both `collect` and
+`save` actions.
+
 Run the complete single-binary example with `go run ./examples/pipeline`.
 For two local worker processes, build it with
 `go build -o bin/pipeline ./examples/pipeline`, then use three terminals:
@@ -412,7 +418,7 @@ GOSPARK_WORKERS=http://127.0.0.1:8081,http://127.0.0.1:8082 bin/pipeline run
 
 ### Lower-level registered jobs
 
-For a first custom job, add another registration inside `init()` in
+For an existing lower-level application, add a registration inside `init()` in
 [`cmd/gospark-worker/main.go`](cmd/gospark-worker/main.go):
 
 ```go
@@ -460,8 +466,10 @@ not shuffled. `ScheduleContext` and `ScheduleSaveContext` accept a
 on driver and workers; do not perform actions such as `Collect` while building
 them. Use `ctx.TaskContext()` for cancellable I/O in callbacks.
 
-The supplied `schedule` CLI accepts the built-in collect/save modes; passing
-arbitrary `JobSpec.Params` requires your own Go driver.
+The supplied `schedule` CLI accepts the built-in collect/save modes and uses
+`RunPipeline` for pipeline registrations; passing arbitrary `JobSpec.Params`
+requires your own Go driver. Existing `RegisterJob` / `Schedule` applications
+continue to work.
 
 ## Linear regression
 

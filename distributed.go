@@ -113,6 +113,7 @@ func GetTask(name string) (TaskFunc, bool) {
 func RegisterJob(name string, fn JobFactory) {
 	taskRegistryMu.Lock()
 	jobRegistry[name] = fn
+	delete(pipelineRegistry, name)
 	taskRegistryMu.Unlock()
 }
 

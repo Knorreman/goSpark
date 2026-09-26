@@ -80,6 +80,36 @@ func TestPipelineTwoWorkerProcesses(t *testing.T) {
 	assertPipelineValues(t, values, []float64{0.2, 0.3, 0.5})
 }
 
+func TestPipelineSaveAcrossWorkerProcesses(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "normalized")
+	manifest, err := RunPipelineSave(JobSpec{TaskName: "pipeline-normalized", NumPartitions: 2},
+		[]TaskRunner{startTestWorker(t), startTestWorker(t)}, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Partitions) != 2 {
+		t.Fatalf("expected two committed partitions: %+v", manifest)
+	}
+	var values []float64
+	for _, part := range manifest.Partitions {
+		data, err := os.ReadFile(part.Key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Fields(string(data)) {
+			value, err := strconv.ParseFloat(line, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			values = append(values, value)
+		}
+	}
+	assertPipelineValues(t, values, []float64{0.2, 0.3, 0.5})
+	if _, err := ReadCommittedOutput(out); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPipelineDependentReductions(t *testing.T) {
 	values, err := RunPipeline[float64](JobSpec{TaskName: "pipeline-dependent-reductions", NumPartitions: 2},
 		[]TaskRunner{startTestWorker(t), startTestWorker(t)})

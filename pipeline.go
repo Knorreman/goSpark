@@ -5,6 +5,16 @@ import (
 	"fmt"
 )
 
+var pipelineRegistry = map[string]bool{}
+
+// IsPipeline reports whether a compiled job supports RunPipeline. Dispatchers
+// can use it to retain support for older RegisterJob applications.
+func IsPipeline(name string) bool {
+	taskRegistryMu.Lock()
+	defer taskRegistryMu.Unlock()
+	return pipelineRegistry[name]
+}
+
 type pipelineReducer struct {
 	partial RDDAny
 	merge   func([]any) (any, error)
@@ -103,6 +113,9 @@ func RegisterPipeline[T any](name string, build func(*Context, JobSpec) (*RDD[T]
 		}
 		return output, nil
 	})
+	taskRegistryMu.Lock()
+	pipelineRegistry[name] = true
+	taskRegistryMu.Unlock()
 }
 
 // RunPipeline evaluates reductions, broadcasts their values, then collects
@@ -112,50 +125,7 @@ func RunPipeline[T any](spec JobSpec, workers []TaskRunner) ([]T, error) {
 }
 
 func RunPipelineContext[T any](ctx context.Context, spec JobSpec, workers []TaskRunner, opts ScheduleOpts) ([]T, error) {
-	if spec.PipelinePhase != "" || spec.Action != "" || spec.TaskName == "" {
-		return nil, fmt.Errorf("pipeline requires a task name and no phase or action")
-	}
-	if spec.NumPartitions <= 0 {
-		spec.NumPartitions = 2
-	}
-	for _, broadcast := range spec.Broadcasts {
-		if len(broadcast.Name) >= len("_gospark_pipeline_") && broadcast.Name[:len("_gospark_pipeline_")] == "_gospark_pipeline_" {
-			return nil, fmt.Errorf("pipeline broadcast names beginning with _gospark_pipeline_ are reserved")
-		}
-	}
-	spec.PipelinePhase = "final"
-	spec.Action = ActionCollect
-	plan, err := PlanJob(spec)
-	if err != nil {
-		return nil, err
-	}
-	spec.InputSplits = plan.InputSplits
-	build, _ := GetJob(spec.TaskName)
-	driver := NewContext(&Config{AppName: spec.TaskName, Master: MasterLocal, NumPartitions: spec.NumPartitions})
-	defer driver.Stop()
-	driver.installInputSplits(spec.InputSplits)
-	if _, err := build(driver, spec); err != nil {
-		return nil, err
-	}
-	for index, reduction := range driver.pipeline.reducers {
-		phase := spec
-		phase.PipelinePhase = "reduce"
-		phase.PipelineNode = index
-		phase.Broadcasts = append([]Broadcast(nil), spec.Broadcasts...)
-		rows, err := ScheduleContext(ctx, phase, workers, opts)
-		if err != nil {
-			return nil, err
-		}
-		value, err := reduction.merge(rows)
-		if err != nil {
-			return nil, err
-		}
-		driver.pipeline.values[index] = value
-		if err := AddBroadcast(&spec, pipelineBroadcastName(index), value); err != nil {
-			return nil, err
-		}
-	}
-	rows, err := ScheduleContext(ctx, spec, workers, opts)
+	rows, err := RunPipelineAnyContext(ctx, spec, workers, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -168,6 +138,91 @@ func RunPipelineContext[T any](ctx context.Context, spec JobSpec, workers []Task
 		values[i] = value
 	}
 	return values, nil
+}
+
+// RunPipelineAny is the untyped variant for dispatchers whose output type is
+// selected at runtime. Prefer RunPipeline[T] when the result type is known.
+func RunPipelineAny(spec JobSpec, workers []TaskRunner) ([]any, error) {
+	return RunPipelineAnyContext(context.Background(), spec, workers, ScheduleOpts{})
+}
+
+func RunPipelineAnyContext(ctx context.Context, spec JobSpec, workers []TaskRunner, opts ScheduleOpts) ([]any, error) {
+	prepared, err := preparePipeline(ctx, spec, workers, opts, ActionCollect)
+	if err != nil {
+		return nil, err
+	}
+	return ScheduleContext(ctx, prepared, workers, opts)
+}
+
+// RunPipelineSave writes each result partition through the retry-safe commit
+// path instead of collecting it on the driver.
+func RunPipelineSave(spec JobSpec, workers []TaskRunner, output string) (OutputManifest, error) {
+	return RunPipelineSaveContext(context.Background(), spec, workers, output, ScheduleOpts{})
+}
+
+func RunPipelineSaveContext(ctx context.Context, spec JobSpec, workers []TaskRunner, output string, opts ScheduleOpts) (OutputManifest, error) {
+	if output == "" {
+		return OutputManifest{}, fmt.Errorf("pipeline output path is required")
+	}
+	params := make(map[string]string, len(spec.Params)+1)
+	for key, value := range spec.Params {
+		params[key] = value
+	}
+	params["path"] = output
+	spec.Params = params
+	prepared, err := preparePipeline(ctx, spec, workers, opts, ActionSave)
+	if err != nil {
+		return OutputManifest{}, err
+	}
+	return ScheduleSaveContext(ctx, prepared, workers, opts)
+}
+
+func preparePipeline(ctx context.Context, spec JobSpec, workers []TaskRunner, opts ScheduleOpts, action string) (JobSpec, error) {
+	if spec.PipelinePhase != "" || spec.Action != "" || spec.TaskName == "" {
+		return JobSpec{}, fmt.Errorf("pipeline requires a task name and no phase or action")
+	}
+	if spec.NumPartitions <= 0 {
+		spec.NumPartitions = 2
+	}
+	for _, broadcast := range spec.Broadcasts {
+		if len(broadcast.Name) >= len("_gospark_pipeline_") && broadcast.Name[:len("_gospark_pipeline_")] == "_gospark_pipeline_" {
+			return JobSpec{}, fmt.Errorf("pipeline broadcast names beginning with _gospark_pipeline_ are reserved")
+		}
+	}
+	spec.PipelinePhase = "final"
+	spec.Action = action
+	plan, err := PlanJob(spec)
+	if err != nil {
+		return JobSpec{}, err
+	}
+	spec.InputSplits = plan.InputSplits
+	build, _ := GetJob(spec.TaskName)
+	driver := NewContext(&Config{AppName: spec.TaskName, Master: MasterLocal, NumPartitions: spec.NumPartitions})
+	defer driver.Stop()
+	driver.installInputSplits(spec.InputSplits)
+	if _, err := build(driver, spec); err != nil {
+		return JobSpec{}, err
+	}
+	for index, reduction := range driver.pipeline.reducers {
+		phase := spec
+		phase.PipelinePhase = "reduce"
+		phase.PipelineNode = index
+		phase.Action = ActionCollect
+		phase.Broadcasts = append([]Broadcast(nil), spec.Broadcasts...)
+		rows, err := ScheduleContext(ctx, phase, workers, opts)
+		if err != nil {
+			return JobSpec{}, err
+		}
+		value, err := reduction.merge(rows)
+		if err != nil {
+			return JobSpec{}, err
+		}
+		driver.pipeline.values[index] = value
+		if err := AddBroadcast(&spec, pipelineBroadcastName(index), value); err != nil {
+			return JobSpec{}, err
+		}
+	}
+	return spec, nil
 }
 
 // RunPipelineLocal executes the same graph in one process without RPCs.

@@ -26,7 +26,7 @@ func init() {
 }
 
 func registerTrainJob(name, loss string) {
-	spark.RegisterJob(name, func(ctx *spark.Context, spec spark.JobSpec) (spark.RDDAny, error) {
+	spark.RegisterPipeline(name, func(ctx *spark.Context, spec spark.JobSpec) (*spark.RDD[trainUpdate], error) {
 		fitIntercept := spec.Params["intercept"] != "false"
 		mode := spec.Params["mode"]
 		if mode != "moments" && mode != "gradient" {
@@ -156,7 +156,6 @@ func trainFiles(path string, runners []spark.TaskRunner, partitions int, cfg Con
 	return descend(cfg, -1, func(mode string, state trainState) (trainUpdate, error) {
 		spec := spark.JobSpec{
 			TaskName:      job,
-			Action:        spark.ActionCollect,
 			NumPartitions: partitions,
 			Params:        map[string]string{"path": path, "intercept": intercept, "mode": mode},
 		}
@@ -165,19 +164,11 @@ func trainFiles(path string, runners []spark.TaskRunner, partitions int, cfg Con
 				return trainUpdate{}, err
 			}
 		}
-		recs, err := spark.Schedule(spec, runners)
+		recs, err := spark.RunPipeline[trainUpdate](spec, runners)
 		if err != nil {
 			return trainUpdate{}, err
 		}
-		updates := make([]trainUpdate, 0, len(recs))
-		for _, rec := range recs {
-			item, ok := rec.(trainUpdate)
-			if !ok {
-				return trainUpdate{}, fmt.Errorf("unexpected training record %T", rec)
-			}
-			updates = append(updates, item)
-		}
-		return mergeUpdates(updates)
+		return mergeUpdates(recs)
 	})
 }
 

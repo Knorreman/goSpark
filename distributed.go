@@ -29,6 +29,8 @@ type JobSpec struct {
 	NumPartitions      int               `json:"num_partitions,omitempty"`
 	ProtocolVersion    int               `json:"protocol_version"`
 	ImageDigest        string            `json:"image_digest,omitempty"`
+	PipelinePhase      string            `json:"pipeline_phase,omitempty"`
+	PipelineNode       int               `json:"pipeline_node,omitempty"`
 	accumulatorContext *Context
 }
 

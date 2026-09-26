@@ -13,6 +13,14 @@ incomplete bucket manifests, and invalid task partitions fail explicitly.
 Fingerprints describe the existing planner's stage structure and JobSpec;
 they do not hash Go function bodies or guarantee arbitrary closures are equal.
 Use identical application builds and deterministic factories on all workers.
+`RegisterPipeline` permits one compiled factory to declare `ReduceBroadcast`
+dependencies on RDDs. `RunPipeline` executes one job per reduction (one
+partial per partition), merges each accepted result on the driver, and sends
+its value in the next job's broadcast spec. The final RDD is then collected.
+`PipelineValue.Value()` must be called during transformation execution, not
+while constructing the factory; Go closures still are not serialized. Job IDs
+and retries are independent for each phase, and a reduction of an empty RDD
+fails. The final `Collect` still materializes results on the driver.
 Named broadcasts travel in the job spec as gob bytes, up to 8 MiB combined.
 Their hashes are part of the plan fingerprint. Read them in the factory; do
 not treat them as shuffled data.

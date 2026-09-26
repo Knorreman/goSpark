@@ -373,6 +373,45 @@ Go closures are not serialized and shipped to workers. A **registered factory**
 reconstructs the pipeline in each process from compiled code and `JobSpec`.
 Build it into the same image used by the driver and every executor.
 
+### One-factory RDD pipelines
+
+For a reduce → broadcast → map pipeline, register **one** graph instead of
+manually registering and submitting separate jobs:
+
+```go
+spark.RegisterPipeline("normalize", func(ctx *spark.Context, spec spark.JobSpec) (*spark.RDD[float64], error) {
+	values := spark.Parallelize(ctx, []float64{2, 3, 5}, spec.NumPartitions)
+	total := spark.ReduceBroadcast(values, func(a, b float64) float64 { return a + b })
+	return spark.Map(values, func(x float64) float64 {
+		return x / total.Value()
+	}), nil
+})
+
+result, err := spark.RunPipeline[float64](spark.JobSpec{
+	TaskName: "normalize", NumPartitions: 2,
+}, workers)
+// result is []float64{0.2, 0.3, 0.5}
+```
+
+`ReduceBroadcast` declares an action; `Value()` is read **inside** a
+transformation, after that action has finished. goSpark schedules a partition
+reduction, merges the partials on the driver, ships the total, then runs the
+final RDD. Use `RunPipelineLocal[float64](spec)` without workers. Each phase
+can retry independently; an empty reduction is an error. The same factory
+must still be compiled into driver and worker binaries.
+
+Run the complete single-binary example with `go run ./examples/pipeline`.
+For two local worker processes, build it with
+`go build -o bin/pipeline ./examples/pipeline`, then use three terminals:
+
+```bash
+GOSPARK_LISTEN=127.0.0.1:8081 GOSPARK_STORE=/tmp/gospark-pipeline-1 bin/pipeline serve
+GOSPARK_LISTEN=127.0.0.1:8082 GOSPARK_STORE=/tmp/gospark-pipeline-2 bin/pipeline serve
+GOSPARK_WORKERS=http://127.0.0.1:8081,http://127.0.0.1:8082 bin/pipeline run
+```
+
+### Lower-level registered jobs
+
 For a first custom job, add another registration inside `init()` in
 [`cmd/gospark-worker/main.go`](cmd/gospark-worker/main.go):
 
